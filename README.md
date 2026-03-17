@@ -124,4 +124,4 @@ python ../classifier/prefetch_candidates.py
 
 ## License
 
-Private project.
+MIT
