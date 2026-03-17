@@ -17,7 +17,7 @@ import { fetchImages, fetchDates, fetchSources } from './api'
 import type { ImageItem, NovelItem } from './types'
 
 const GALLERY_PAGE_SIZE = 60
-const STORAGE_KEY = 'booru-gallery-ui-state'
+const STORAGE_KEY = 'sieve-ui-state'
 
 type View = 'gallery' | 'novels' | 'labeler' | 'danbooru' | 'stats'
 type GalleryMode = 'infinite' | 'paged'

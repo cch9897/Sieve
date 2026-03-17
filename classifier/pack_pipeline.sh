@@ -8,7 +8,7 @@ BACKEND_DIR="$PROJECT_ROOT/backend"
 LABELS_DB="$BACKEND_DIR/danbooru_labels.db"
 
 # These can be overridden via environment
-TOYSERVER="${TOYSERVER_HOST:-192.168.50.20}"
+TOYSERVER="${TOYSERVER_HOST:?Set TOYSERVER_HOST in .env}"
 LOCAL_DISLIKED="${DANBOORU_DISLIKED_DIR:-/tmp/danbooru_disliked}"
 
 echo "=== Step 1: Extract disliked from remote ($TOYSERVER) ==="

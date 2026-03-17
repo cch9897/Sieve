@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Incremental auto-tagger for Booru Gallery using imgutils WD14.
+Incremental auto-tagger using imgutils WD14.
 
 Usage:
     python auto_tagger.py [--batch N] [--sleep S] [--threshold T]

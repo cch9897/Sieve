@@ -12,6 +12,6 @@ if [ ! -d "$VENV_DIR" ]; then
     "$VENV_DIR/bin/pip" install -q -r "$BACKEND_DIR/requirements.txt"
 fi
 
-echo "Starting Booru Gallery on http://localhost:8780"
+echo "Starting Sieve on http://localhost:8780"
 cd "$BACKEND_DIR"
 exec "$VENV_DIR/bin/python" -m uvicorn main:app --host 0.0.0.0 --port 8780

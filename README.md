@@ -1,6 +1,6 @@
-# Booru Gallery
+# Sieve
 
-A local image gallery and labeling tool for booru-crawled artwork, with AI-powered preference classification.
+A personal artwork curation tool that learns your taste. Browse, label, auto-tag, and train preference models to surface art you'll love from booru sources.
 
 ## Features
 
@@ -15,7 +15,7 @@ A local image gallery and labeling tool for booru-crawled artwork, with AI-power
 ## Architecture
 
 ```
-booru-gallery/
+sieve/
 ├── backend/              # FastAPI backend
 │   ├── main.py           # API server (~2500 lines)
 │   ├── config.py         # Configuration (env-based)
