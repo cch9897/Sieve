@@ -1,0 +1,79 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+  scrollbar-width: thin;
+  scrollbar-color: #4a4a5a #202123;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: #0d0d0f;
+  color: #ececf1;
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+::selection {
+  background: rgba(96, 165, 250, 0.28);
+}
+
+.masonry {
+  column-count: 2;
+  column-gap: 10px;
+}
+
+.masonry-item {
+  break-inside: avoid;
+  margin-bottom: 10px;
+}
+
+@media (min-width: 640px) {
+  .masonry { column-count: 2; column-gap: 14px; }
+  .masonry-item { margin-bottom: 14px; }
+}
+
+@media (min-width: 768px) {
+  .masonry { column-count: 3; }
+}
+
+@media (min-width: 1024px) {
+  .masonry { column-count: 4; }
+}
+
+@media (min-width: 1280px) {
+  .masonry { column-count: 5; }
+}
+
+@media (min-width: 1536px) {
+  .masonry { column-count: 6; }
+}
+
+/* Safe area for mobile bottom nav */
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0);
+}
+
+/* Extra bottom padding on mobile to avoid bottom nav overlap */
+@media (max-width: 767px) {
+  main, .pb-24 {
+    padding-bottom: 5rem !important;
+  }
+}
