@@ -399,7 +399,7 @@ async def lifespan(app: FastAPI):
         _danbooru_client = None
 
 
-app = FastAPI(title="Booru Gallery", lifespan=lifespan)
+app = FastAPI(title="Sieve", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

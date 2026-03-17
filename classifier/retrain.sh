@@ -18,7 +18,7 @@ echo "=== Step 2: Training classifier ==="
 python3 "$SCRIPT_DIR/train_classifier.py"
 
 # 3. Restart service to load new model
-echo "=== Step 3: Restarting booru-gallery ==="
-systemctl --user restart booru-gallery || echo "Service restart skipped (not installed)"
+echo "=== Step 3: Restarting sieve ==="
+systemctl --user restart sieve || echo "Service restart skipped (not installed)"
 
 echo "Done! Model retrained and service restarted."

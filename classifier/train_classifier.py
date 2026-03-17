@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Preference classifier: trains on WD14 tags to predict liked/disliked images.
-Combines booru-gallery human labels + Twitter liked images.
+Combines human labels + Twitter liked images.
 """
 
 import json
@@ -37,7 +37,7 @@ MODEL_OUT = _resolve("PREFERENCE_MODEL_PATH", "classifier/model.joblib")
 REPORT_OUT = _resolve("REPORT_OUT", "classifier/report.txt")
 
 def load_booru_data():
-    """Load booru-gallery labels + auto_tags."""
+    """Load labels + auto_tags from the labeling database."""
     conn = sqlite3.connect(LABELS_DB)
     cur = conn.cursor()
     
@@ -221,7 +221,7 @@ def train_and_evaluate(X, y, names, feature_names):
 # ============================================================
 
 if __name__ == '__main__':
-    print("Loading booru-gallery data...")
+    print("Loading labeled data...")
     booru_data = load_booru_data()
     print(f"  Booru: {len(booru_data)} samples ({sum(1 for _,_,l,_ in booru_data if l==1)} liked, {sum(1 for _,_,l,_ in booru_data if l==0)} disliked)")
     
