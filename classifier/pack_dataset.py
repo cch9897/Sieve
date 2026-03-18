@@ -1,18 +1,28 @@
 #!/usr/bin/env python3
 """
 Package preference classifier dataset for GPU training.
-Resizes images to 384px (longer edge) to reduce transfer size while keeping enough quality for 224 training.
+
+Supports two input modes:
+  1. Folder-based (universal):
+       python pack_dataset.py --liked ~/liked_imgs --disliked ~/disliked_imgs
+       python pack_dataset.py --data-dir ~/data  (expects liked/ + disliked/ subdirs)
+
+  2. DB-based (Sieve-specific, activated by env vars or flags):
+       Reads from labels.db, dedup.db, twitter dir, danbooru labels etc.
+       Configure via .env or environment variables.
+
 Output: preference_train.tar.gz with images/ + manifest.csv + train.py + requirements.txt
 """
 
+import argparse
 import csv
 import os
 import shutil
 import sqlite3
 import subprocess
 import sys
-from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 
 from PIL import Image
 
@@ -25,30 +35,25 @@ try:
 except ImportError:
     pass
 
+DEFAULT_MAX_SIZE = 512
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tiff"}
+
+
 def _env_path(key, default):
     val = os.environ.get(key, default)
+    if not val:
+        return None
     p = Path(val)
     return p if p.is_absolute() else _PROJECT_ROOT / p
 
-CRAWLER_DIR = _env_path("CRAWLER_DIR", "")
-LABELS_DB = _env_path("LABELS_DB", "backend/labels.db")
-DEDUP_DB = CRAWLER_DIR / "dedup.db"
-TWITTER_DIR = Path(os.environ.get("TWITTER_DIR", ""))
-DANBOORU_LABELS_DB = _PROJECT_ROOT / "backend" / "danbooru_labels.db"
-DANBOORU_LIKES_DIR = _env_path("DANBOORU_LIKES_DIR", "data/danbooru_liked")
-OUT_DIR = _PROJECT_ROOT / "classifier" / "_tmp_pack"
-ARCHIVE = _PROJECT_ROOT / "classifier" / "preference_train.tar.gz"
-MAX_SIZE = 384  # longer edge
 
-
-def resize_and_save(src: str, dst: str):
+def resize_and_save(src: str, dst: str, max_size: int):
     """Resize image preserving aspect ratio, save as JPEG."""
     try:
-        img = Image.open(src)
-        img = img.convert("RGB")
+        img = Image.open(src).convert("RGB")
         w, h = img.size
-        if max(w, h) > MAX_SIZE:
-            ratio = MAX_SIZE / max(w, h)
+        if max(w, h) > max_size:
+            ratio = max_size / max(w, h)
             img = img.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
         img.save(dst, "JPEG", quality=85)
         return True
@@ -57,110 +62,244 @@ def resize_and_save(src: str, dst: str):
         return False
 
 
-def main():
-    # Clean
-    if OUT_DIR.exists():
-        shutil.rmtree(OUT_DIR)
-    (OUT_DIR / "images").mkdir(parents=True)
+def is_image(filename: str) -> bool:
+    return Path(filename).suffix.lower() in IMAGE_EXTS
 
-    manifest = []
 
-    # --- Booru data ---
-    print("Loading booru labels...")
-    conn_l = sqlite3.connect(str(LABELS_DB))
-    cur_l = conn_l.cursor()
-    cur_l.execute('SELECT image_id, verdict FROM labels WHERE verdict IN ("liked", "disliked")')
-    labels = {r[0]: r[1] for r in cur_l.fetchall()}
-    conn_l.close()
+# ---------------------------------------------------------------------------
+# Data source: folders
+# ---------------------------------------------------------------------------
 
-    conn_d = sqlite3.connect(str(DEDUP_DB))
-    cur_d = conn_d.cursor()
-    ids = list(labels.keys())
-    placeholders = ",".join("?" * len(ids))
-    cur_d.execute(f"SELECT id, file_path FROM images WHERE id IN ({placeholders})", ids)
-    booru_rows = cur_d.fetchall()
-    conn_d.close()
+def collect_from_folders(liked_dirs: list[Path], disliked_dirs: list[Path]) -> list[tuple]:
+    """Collect (source_path, dest_name, label) from liked/disliked directories."""
+    tasks = []
+    seen_names = set()
 
-    print(f"Booru: {len(booru_rows)} images ({sum(1 for v in labels.values() if v=='liked')} liked, {sum(1 for v in labels.values() if v=='disliked')} disliked)")
+    def _add_dir(directory: Path, label: int, prefix: str):
+        if not directory.is_dir():
+            print(f"  Warning: {directory} not found, skipping")
+            return 0
+        count = 0
+        for f in sorted(directory.iterdir()):
+            if f.is_file() and is_image(f.name):
+                # Ensure unique dest names
+                stem = f.stem
+                name = f"{prefix}_{stem}.jpg"
+                if name in seen_names:
+                    i = 1
+                    while f"{prefix}_{stem}_{i}.jpg" in seen_names:
+                        i += 1
+                    name = f"{prefix}_{stem}_{i}.jpg"
+                seen_names.add(name)
+                tasks.append((str(f), name, label))
+                count += 1
+        return count
+
+    for i, d in enumerate(liked_dirs):
+        prefix = f"liked{i}" if len(liked_dirs) > 1 else "liked"
+        n = _add_dir(d, 1, prefix)
+        print(f"  Liked dir {d}: {n} images")
+
+    for i, d in enumerate(disliked_dirs):
+        prefix = f"disliked{i}" if len(disliked_dirs) > 1 else "disliked"
+        n = _add_dir(d, 0, prefix)
+        print(f"  Disliked dir {d}: {n} images")
+
+    return tasks
+
+
+# ---------------------------------------------------------------------------
+# Data source: Sieve databases (optional)
+# ---------------------------------------------------------------------------
+
+def collect_from_sieve_dbs() -> list[tuple]:
+    """Collect from Sieve's label DB + crawler DB + Twitter + Danbooru.
+    Returns empty list if required DBs are not configured."""
+    tasks = []
+
+    # --- Booru crawler data ---
+    labels_db = _env_path("LABELS_DB", "backend/labels.db")
+    crawler_dir = _env_path("CRAWLER_DIR", "")
+
+    if labels_db and labels_db.exists() and crawler_dir and crawler_dir.exists():
+        dedup_db = crawler_dir / "dedup.db"
+        if dedup_db.exists():
+            conn_l = sqlite3.connect(str(labels_db))
+            cur = conn_l.cursor()
+            cur.execute('SELECT image_id, verdict FROM labels WHERE verdict IN ("liked", "disliked")')
+            labels = {r[0]: r[1] for r in cur.fetchall()}
+            conn_l.close()
+
+            conn_d = sqlite3.connect(str(dedup_db))
+            cur = conn_d.cursor()
+            ids = list(labels.keys())
+            if ids:
+                ph = ",".join("?" * len(ids))
+                cur.execute(f"SELECT id, file_path FROM images WHERE id IN ({ph})", ids)
+                for img_id, fp in cur.fetchall():
+                    src = str(crawler_dir / fp)
+                    label = 1 if labels[img_id] == "liked" else 0
+                    tasks.append((src, f"booru_{img_id}.jpg", label))
+            conn_d.close()
+            n_liked = sum(1 for t in tasks if t[2] == 1)
+            n_disliked = sum(1 for t in tasks if t[2] == 0)
+            print(f"  Booru: {len(tasks)} ({n_liked} liked, {n_disliked} disliked)")
 
     # --- Twitter data ---
-    twitter_files = sorted([
-        f for f in TWITTER_DIR.iterdir()
-        if f.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp", ".gif")
-    ])
-    print(f"Twitter: {len(twitter_files)} images (all liked)")
+    twitter_dir = os.environ.get("TWITTER_DIR", "")
+    if twitter_dir and Path(twitter_dir).is_dir():
+        count = 0
+        for f in sorted(Path(twitter_dir).iterdir()):
+            if f.is_file() and is_image(f.name):
+                tasks.append((str(f), f"twitter_{f.stem}.jpg", 1))
+                count += 1
+        if count:
+            print(f"  Twitter: {count} images (all liked)")
 
-    # --- Danbooru (DanbooruFinder) labeled data ---
-    danbooru_labels = {}
-    if DANBOORU_LABELS_DB.exists():
-        conn_dl = sqlite3.connect(str(DANBOORU_LABELS_DB))
-        cur_dl = conn_dl.cursor()
-        cur_dl.execute('SELECT image_id, ext, verdict FROM labels WHERE verdict IN ("liked", "disliked")')
-        for row in cur_dl.fetchall():
-            danbooru_labels[row[0]] = (row[1], row[2])
-        conn_dl.close()
-        n_liked = sum(1 for v in danbooru_labels.values() if v[1] == 'liked')
-        n_disliked = sum(1 for v in danbooru_labels.values() if v[1] == 'disliked')
-        print(f"Danbooru: {len(danbooru_labels)} images ({n_liked} liked, {n_disliked} disliked)")
-    else:
-        print("Danbooru labels DB not found, skipping")
+    # --- Danbooru labeled data ---
+    danbooru_labels_db = _PROJECT_ROOT / "backend" / "danbooru_labels.db"
+    danbooru_likes_dir = _env_path("DANBOORU_LIKES_DIR", "data/danbooru_liked")
+    danbooru_disliked_dir = Path(os.environ.get("DANBOORU_DISLIKED_DIR", "/tmp/danbooru_disliked"))
 
-    # --- Resolve Danbooru image paths ---
-    # Liked images are saved in DANBOORU_LIKES_DIR
-    # Disliked images: check /tmp/danbooru_disliked/ (pre-downloaded)
-    DANBOORU_DISLIKED_DIR = Path(os.environ.get("DANBOORU_DISLIKED_DIR", "/tmp/danbooru_disliked"))
-    danbooru_tasks = []
-    danbooru_found = 0
-    danbooru_missing = 0
-    for img_id, (ext, verdict) in danbooru_labels.items():
-        label = 1 if verdict == "liked" else 0
-        if verdict == "liked":
-            src = DANBOORU_LIKES_DIR / f"{img_id}.{ext}"
+    if danbooru_labels_db.exists():
+        conn = sqlite3.connect(str(danbooru_labels_db))
+        cur = conn.cursor()
+        cur.execute('SELECT image_id, ext, verdict FROM labels WHERE verdict IN ("liked", "disliked")')
+        n_liked = n_disliked = n_missing = 0
+        for img_id, ext, verdict in cur.fetchall():
+            label = 1 if verdict == "liked" else 0
+            if verdict == "liked" and danbooru_likes_dir:
+                src = danbooru_likes_dir / f"{img_id}.{ext}"
+            else:
+                src = danbooru_disliked_dir / f"{img_id}.{ext}"
+            if src.exists() and src.stat().st_size > 100:
+                tasks.append((str(src), f"danbooru_{img_id}.jpg", label))
+                if label == 1:
+                    n_liked += 1
+                else:
+                    n_disliked += 1
+            else:
+                n_missing += 1
+        conn.close()
+        if n_liked + n_disliked > 0:
+            print(f"  Danbooru: {n_liked + n_disliked} ({n_liked} liked, {n_disliked} disliked, {n_missing} missing)")
+
+    return tasks
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Pack image preference dataset for training",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""\
+Examples:
+  # From liked/disliked folders:
+  python pack_dataset.py --liked ~/liked --disliked ~/disliked
+
+  # From a data directory with liked/ and disliked/ subdirs:
+  python pack_dataset.py --data-dir ~/preference_data
+
+  # Multiple source directories:
+  python pack_dataset.py --liked ~/pixiv_fav ~/twitter_fav --disliked ~/disliked
+
+  # Include Sieve DB sources (requires configured .env):
+  python pack_dataset.py --liked ~/extra_liked --include-db
+
+  # DB-only mode (Sieve users):
+  python pack_dataset.py --include-db
+""",
+    )
+    parser.add_argument("--liked", nargs="*", type=Path, help="Directories of liked images")
+    parser.add_argument("--disliked", nargs="*", type=Path, help="Directories of disliked images")
+    parser.add_argument("--data-dir", type=Path, help="Directory with liked/ and disliked/ subdirs")
+    parser.add_argument("--include-db", action="store_true",
+                        help="Also include images from Sieve databases (labels.db, twitter, danbooru)")
+    parser.add_argument("--max-size", type=int, default=DEFAULT_MAX_SIZE,
+                        help=f"Resize longer edge to this (default: {DEFAULT_MAX_SIZE})")
+    parser.add_argument("--output", type=Path, default=None,
+                        help="Output archive path (default: classifier/preference_train.tar.gz)")
+    parser.add_argument("--workers", type=int, default=8, help="Parallel resize workers")
+    parser.add_argument("--no-train-script", action="store_true", help="Don't bundle train.py")
+    args = parser.parse_args()
+
+    # Determine output path
+    archive = args.output or (_PROJECT_ROOT / "classifier" / "preference_train.tar.gz")
+    out_dir = archive.parent / "_tmp_pack"
+
+    # Collect tasks from all sources
+    all_tasks = []  # [(src_path, dest_name, label), ...]
+
+    # Folder-based sources
+    liked_dirs = list(args.liked or [])
+    disliked_dirs = list(args.disliked or [])
+
+    if args.data_dir:
+        d = args.data_dir
+        if (d / "liked").is_dir():
+            liked_dirs.append(d / "liked")
+        if (d / "disliked").is_dir():
+            disliked_dirs.append(d / "disliked")
+        if not (d / "liked").is_dir() and not (d / "disliked").is_dir():
+            print(f"Error: --data-dir {d} has no liked/ or disliked/ subdirectory")
+            sys.exit(1)
+
+    if liked_dirs or disliked_dirs:
+        print("Collecting from directories...")
+        all_tasks.extend(collect_from_folders(liked_dirs, disliked_dirs))
+
+    # DB-based sources (opt-in or fallback when no folders given)
+    if args.include_db or (not liked_dirs and not disliked_dirs):
+        if not liked_dirs and not disliked_dirs and not args.include_db:
+            # Auto-detect: try DB sources
+            print("No directories specified, trying Sieve database sources...")
         else:
-            src = DANBOORU_DISLIKED_DIR / f"{img_id}.{ext}"
-        if src.exists() and src.stat().st_size > 100:
-            danbooru_tasks.append((str(src), img_id, ext, label))
-            danbooru_found += 1
-        else:
-            danbooru_missing += 1
-    n_dl = sum(1 for _, _, _, l in danbooru_tasks if l == 1)
-    n_dd = sum(1 for _, _, _, l in danbooru_tasks if l == 0)
-    print(f"Danbooru resolved: {danbooru_found} found ({n_dl} liked, {n_dd} disliked), {danbooru_missing} missing")
+            print("Including Sieve database sources...")
+        db_tasks = collect_from_sieve_dbs()
+        if db_tasks:
+            all_tasks.extend(db_tasks)
+        elif not liked_dirs and not disliked_dirs:
+            print("\nNo data sources found. Use --liked/--disliked or --data-dir to specify image directories.")
+            print("See --help for examples.")
+            sys.exit(1)
 
-    # --- Process with thread pool ---
-    tasks = []
-    for img_id, fp in booru_rows:
-        src = str(CRAWLER_DIR / fp)
-        dst = str(OUT_DIR / "images" / f"booru_{img_id}.jpg")
-        verdict = labels[img_id]
-        tasks.append((src, dst, 1 if verdict == "liked" else 0, f"booru_{img_id}.jpg"))
+    n_liked = sum(1 for t in all_tasks if t[2] == 1)
+    n_disliked = sum(1 for t in all_tasks if t[2] == 0)
+    print(f"\nTotal: {len(all_tasks)} images ({n_liked} liked, {n_disliked} disliked)")
 
-    for tf in twitter_files:
-        dst_name = f"twitter_{tf.stem}.jpg"
-        dst = str(OUT_DIR / "images" / dst_name)
-        tasks.append((str(tf), dst, 1, dst_name))
+    if len(all_tasks) == 0:
+        print("No images found, nothing to pack.")
+        sys.exit(1)
 
-    for src, img_id, ext, label in danbooru_tasks:
-        dst_name = f"danbooru_{img_id}.jpg"
-        dst = str(OUT_DIR / "images" / dst_name)
-        tasks.append((src, dst, label, dst_name))
+    # Prepare output directory
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
+    (out_dir / "images").mkdir(parents=True)
 
-    print(f"\nResizing {len(tasks)} images to {MAX_SIZE}px...")
+    # Resize images
+    print(f"Resizing to {args.max_size}px...")
+    manifest = []
     done = 0
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        futures = {pool.submit(resize_and_save, src, dst): (dst_name, label) for src, dst, label, dst_name in tasks}
+    with ThreadPoolExecutor(max_workers=args.workers) as pool:
+        futures = {}
+        for src, dst_name, label in all_tasks:
+            dst = str(out_dir / "images" / dst_name)
+            futures[pool.submit(resize_and_save, src, dst, args.max_size)] = (dst_name, label)
         for fut in as_completed(futures):
             dst_name, label = futures[fut]
             if fut.result():
                 manifest.append((dst_name, label))
                 done += 1
-            if done % 200 == 0:
-                print(f"  {done}/{len(tasks)}")
+            if done % 500 == 0 and done > 0:
+                print(f"  {done}/{len(all_tasks)}")
 
-    print(f"  Done: {done}/{len(tasks)}")
+    print(f"  Done: {done}/{len(all_tasks)}")
 
-    # --- Write manifest ---
-    manifest_path = OUT_DIR / "manifest.csv"
+    # Write manifest
+    manifest_path = out_dir / "manifest.csv"
     with open(manifest_path, "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["filename", "label"])
@@ -168,28 +307,28 @@ def main():
             w.writerow([name, label])
     print(f"Manifest: {len(manifest)} entries")
 
-    # --- Copy training script ---
-    train_script = OUT_DIR / "train.py"
-    train_script.write_text(TRAIN_SCRIPT)
-    (OUT_DIR / "requirements.txt").write_text(REQUIREMENTS)
-    print("Added train.py + requirements.txt")
+    # Bundle training script
+    if not args.no_train_script:
+        (out_dir / "train.py").write_text(TRAIN_SCRIPT)
+        (out_dir / "requirements.txt").write_text(REQUIREMENTS)
+        print("Added train.py + requirements.txt")
 
-    # --- Compress ---
-    print(f"\nCompressing to {ARCHIVE}...")
+    # Compress
+    print(f"Compressing to {archive}...")
     subprocess.run(
-        ["tar", "czf", str(ARCHIVE), "-C", str(OUT_DIR.parent), OUT_DIR.name],
+        ["tar", "czf", str(archive), "-C", str(out_dir.parent), out_dir.name],
         check=True,
     )
-    size_mb = ARCHIVE.stat().st_size / 1024 / 1024
+    size_mb = archive.stat().st_size / 1024 / 1024
     print(f"Archive: {size_mb:.0f} MB")
-    print(f"\nDone! Transfer {ARCHIVE} to your GPU machine and run:")
-    print(f"  tar xzf preference_train.tar.gz")
-    print(f"  cd preference_train")
+    print(f"\nDone! Transfer {archive} to your GPU machine and run:")
+    print(f"  tar xzf {archive.name}")
+    print(f"  cd {out_dir.name}")
     print(f"  pip install -r requirements.txt")
     print(f"  python train.py")
 
     # Cleanup
-    shutil.rmtree(OUT_DIR)
+    shutil.rmtree(out_dir)
 
 
 REQUIREMENTS = """\
@@ -273,13 +412,10 @@ def get_transforms(train=True, size=224):
 def create_model(model_name, num_classes=1, unfreeze_stages=0):
     model = timm.create_model(model_name, pretrained=True, num_classes=num_classes)
 
-    # Freeze backbone
     for param in model.parameters():
         param.requires_grad = False
 
-    # Unfreeze classifier head
     if hasattr(model, 'head'):
-        # timm ConvNeXt / EfficientNet style
         for param in model.head.parameters():
             param.requires_grad = True
     elif hasattr(model, 'classifier'):
@@ -289,7 +425,6 @@ def create_model(model_name, num_classes=1, unfreeze_stages=0):
         for param in model.fc.parameters():
             param.requires_grad = True
 
-    # Optionally unfreeze last N stages
     if unfreeze_stages > 0 and hasattr(model, 'stages'):
         stages = list(model.stages)
         for stage in stages[-unfreeze_stages:]:
@@ -389,7 +524,6 @@ def main():
         print(f"  GPU: {torch.cuda.get_device_name()}")
         print(f"  VRAM: {torch.cuda.get_device_properties(0).total_mem / 1024**3:.1f} GB")
 
-    # --- Cross-validation ---
     skf = StratifiedKFold(n_splits=args.folds, shuffle=True, random_state=42)
     all_val_probs = np.zeros(len(df))
     fold_aucs = []
@@ -401,8 +535,6 @@ def main():
 
         train_df = df.iloc[train_idx]
         val_df = df.iloc[val_idx]
-        print(f"  Train: {len(train_df)} ({train_df['label'].sum()} liked)")
-        print(f"  Val:   {len(val_df)} ({val_df['label'].sum()} liked)")
 
         train_ds = PreferenceDataset(train_df, img_dir, get_transforms(True, args.size))
         val_ds = PreferenceDataset(val_df, img_dir, get_transforms(False, args.size))
@@ -412,7 +544,6 @@ def main():
         model = create_model(args.model, num_classes=1, unfreeze_stages=args.unfreeze)
         model = model.to(device)
 
-        # Handle class imbalance
         n_pos = train_df["label"].sum()
         n_neg = len(train_df) - n_pos
         pos_weight = torch.tensor([n_neg / max(n_pos, 1)], device=device)
@@ -445,18 +576,16 @@ def main():
         fold_aucs.append(best_auc)
         print(f"  Best Val AUC: {best_auc:.4f}")
 
-    # --- Overall CV results ---
     overall_auc = roc_auc_score(df["label"].values, all_val_probs)
-    overall_preds = (all_val_probs >= 0.5).astype(int)
     print(f"\n{'='*60}")
     print(f"Cross-Validation Results")
     print(f"{'='*60}")
     print(f"Fold AUCs: {[f'{a:.4f}' for a in fold_aucs]}")
     print(f"Mean AUC:  {np.mean(fold_aucs):.4f} ± {np.std(fold_aucs):.4f}")
     print(f"Overall AUC: {overall_auc:.4f}")
-    print(classification_report(df["label"].values, overall_preds, target_names=["disliked", "liked"]))
+    print(classification_report(df["label"].values, (all_val_probs >= 0.5).astype(int),
+                                target_names=["disliked", "liked"]))
 
-    # --- Train final model on all data ---
     print(f"\nTraining final model on all data...")
     full_ds = PreferenceDataset(df, img_dir, get_transforms(True, args.size))
     full_loader = DataLoader(full_ds, batch_size=args.batch_size, shuffle=True, num_workers=args.workers, pin_memory=True)
@@ -481,7 +610,6 @@ def main():
         scheduler.step()
         print(f"  Epoch {epoch+1:2d}/{args.epochs} ({time.time()-t0:.0f}s) | loss={train_loss:.4f} acc={train_acc:.3f}")
 
-    # --- Save ---
     output_path = Path(args.output)
     save_dict = {
         "model_state_dict": model.cpu().state_dict(),
@@ -500,7 +628,6 @@ def main():
     torch.save(save_dict, output_path)
     print(f"\nModel saved to {output_path} ({output_path.stat().st_size / 1024 / 1024:.1f} MB)")
     print(f"CV AUC: {overall_auc:.4f}")
-    print(f"\nDone! Upload {output_path} back to your server.")
 
 
 if __name__ == "__main__":
