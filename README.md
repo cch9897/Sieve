@@ -2,6 +2,8 @@
 
 A personal artwork curation tool that learns your taste. Browse, label, auto-tag, and train preference models to surface art you'll love from booru sources.
 
+> **Note:** This project is entirely AI-generated — code, documentation, and all. Built through conversations with Claude (Anthropic) via [OpenClaw](https://github.com/openclaw/openclaw).
+
 ## Features
 
 - **Image Gallery**: Browse crawled images with infinite scroll, filtering by source/date/media type, and lightbox viewer
@@ -17,19 +19,18 @@ A personal artwork curation tool that learns your taste. Browse, label, auto-tag
 ```
 sieve/
 ├── backend/              # FastAPI backend
-│   ├── main.py           # API server (~2500 lines)
+│   ├── main.py           # API server
 │   ├── config.py         # Configuration (env-based)
 │   ├── auto_tagger.py    # WD14 auto-tagging script
 │   └── run_auto_tagger.sh
 ├── classifier/           # Preference ML pipeline
-│   ├── train_classifier.py    # XGBoost training
+│   ├── pack_dataset.py        # Dataset packaging (folder or DB input)
+│   ├── pack_pipeline.sh       # Pack wrapper (loads .env + venv)
+│   ├── train_ev2_multi_card.py # DDP multi-GPU training (EVA02/ConvNeXt)
+│   ├── train_classifier.py    # XGBoost tag-based training
 │   ├── prefetch_candidates.py # Continuous AI pre-screening
-│   ├── tag_twitter.py         # WD14 tagging for Twitter images
-│   ├── score_danbooru.py      # CLI scoring tool
-│   ├── pack_dataset.py        # Dataset packaging for GPU training
-│   ├── pack_pipeline.sh       # Full pack pipeline (remote extract + pack)
-│   ├── extract_disliked_remote.py  # Remote tar extraction helper
-│   └── retrain.sh             # One-click retrain pipeline
+│   ├── retrain.sh             # One-click retrain pipeline
+│   └── integrations/          # Site-specific scripts (optional)
 ├── frontend/             # React + TypeScript + Tailwind
 │   └── src/
 │       ├── App.tsx
@@ -77,7 +78,7 @@ All paths are configured via environment variables (see `.env.example`). Key set
 | `DANBOORU_API` | DanbooruFinder API endpoint | `http://localhost:5001` |
 | `PORT` | Server port | `8780` |
 | `PREFERENCE_MODEL_PATH` | XGBoost model path | `classifier/model.joblib` |
-| `CNN_MODEL_PATH` | CNN model path | `classifier/model_cnn.pt` |
+| `CNN_MODEL_PATH` | Vision model path | `classifier/model_aesthetic.pt` |
 | `TWITTER_DIR` | Twitter liked images (training data) | (optional) |
 
 ## Keyboard Shortcuts
