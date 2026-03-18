@@ -63,17 +63,25 @@ Copy the trained `.pt` file back to `classifier/model_aesthetic.pt` (or set `CNN
 
 ## Files
 
+### Core (universal)
+
 | File | Description |
 |------|-------------|
 | `pack_dataset.py` | Pack images into training archive (folder or DB input) |
-| `pack_pipeline.sh` | Wrapper: local pack or remote-server pack |
+| `pack_pipeline.sh` | Thin wrapper: loads .env, activates venv, runs pack_dataset.py |
 | `train_ev2_multi_card.py` | Advanced DDP multi-GPU training (EVA02/ConvNeXt) |
 | `train_classifier.py` | XGBoost tag-based classifier (requires auto-tags) |
 | `prefetch_candidates.py` | Pre-screen images with fusion scoring (XGBoost + vision) |
-| `score_danbooru.py` | Score images from a Danbooru-compatible API |
-| `tag_twitter.py` | Auto-tag Twitter liked images with WD14 |
-| `extract_disliked_remote.py` | Extract images from tar archives on a remote server |
 | `retrain.sh` | Re-tag + retrain XGBoost pipeline |
+
+### Integrations (site-specific, optional)
+
+| File | Description |
+|------|-------------|
+| `integrations/pack_remote.sh` | Remote pack via SSH + DanbooruFinder tar extraction |
+| `integrations/extract_disliked_remote.py` | Extract images from DanbooruFinder tar archives |
+| `integrations/score_danbooru.py` | Score images from a DanbooruFinder API |
+| `integrations/tag_twitter.py` | Auto-tag Twitter liked images with WD14 |
 
 ## Architecture
 

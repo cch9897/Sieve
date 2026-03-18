@@ -11,7 +11,11 @@ source venv/bin/activate
 
 # 1. Tag new images (if Twitter data configured)
 echo "=== Step 1: Tagging new images ==="
-python3 "$SCRIPT_DIR/tag_twitter.py"
+if [ -f "$SCRIPT_DIR/integrations/tag_twitter.py" ] && [ -n "${TWITTER_DIR:-}" ]; then
+    python3 "$SCRIPT_DIR/integrations/tag_twitter.py"
+else
+    echo "  Skipped (no TWITTER_DIR or tag_twitter.py not found)"
+fi
 
 # 2. Retrain
 echo "=== Step 2: Training classifier ==="
