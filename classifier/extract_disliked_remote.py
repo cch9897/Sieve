@@ -12,9 +12,9 @@ import os
 import sqlite3
 import sys
 
-TAR_INDEX_DB = os.environ.get("TAR_INDEX_DB", "/tmp/tar_index.db")
+TAR_INDEX_DB = os.environ.get("TAR_INDEX_DB", "/home/cch/DanbooruFinder_Backend/cache/tar_index.db")
 LABELS_DB_PATH = sys.argv[1]
-OUT_DIR = os.environ.get("DANBOORU_DISLIKED_DIR", "/tmp/danbooru_disliked")
+OUT_DIR = os.environ.get("DANBOORU_DISLIKED_DIR", "/home/cch/_tmp_pack_work/disliked")
 
 os.makedirs(OUT_DIR, exist_ok=True)
 

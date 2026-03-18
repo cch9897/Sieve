@@ -286,11 +286,11 @@ export default function StatsView() {
             )}
           </div>
 
-          {/* CNN card */}
+          {/* Vision model card */}
           <div className="rounded-2xl border border-dark-700/50 bg-dark-950/60 p-4">
             <div className="flex items-center gap-2 text-sm font-medium text-dark-200">
               <span className="h-2.5 w-2.5 rounded-full bg-blue-400" />
-              CNN
+              Vision
               {mlModels?.cnn ? (
                 <span className="ml-auto rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] text-emerald-400">已加载</span>
               ) : (

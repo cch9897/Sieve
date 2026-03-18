@@ -347,17 +347,50 @@ async def lifespan(app: FastAPI):
     if CNN_MODEL_PATH.exists():
         try:
             import torch, timm
+            import torch.nn as tnn
             from torchvision import transforms as T
             checkpoint = torch.load(str(CNN_MODEL_PATH), map_location='cpu', weights_only=False)
             model_name = checkpoint['model_name']
-            cnn = timm.create_model(model_name, pretrained=False, num_classes=checkpoint['num_classes'])
-            cnn.load_state_dict(checkpoint['model_state_dict'])
-            cnn.eval()
+            model_class = checkpoint.get('model_class', 'timm')
             input_size = checkpoint.get('input_size', 224)
             mean = checkpoint.get('normalize_mean', [0.485, 0.456, 0.406])
             std = checkpoint.get('normalize_std', [0.229, 0.224, 0.225])
+
+            if model_class == 'PreferenceModel':
+                # Custom PreferenceModel: timm backbone (num_classes=0) + head
+                class PreferenceModel(tnn.Module):
+                    def __init__(self, backbone, num_features, dropout=0.2):
+                        super().__init__()
+                        self.backbone = backbone
+                        self.head = tnn.Sequential(
+                            tnn.LayerNorm(num_features),
+                            tnn.Dropout(p=dropout),
+                            tnn.Linear(num_features, 256),
+                            tnn.GELU(),
+                            tnn.Dropout(p=dropout * 0.5),
+                            tnn.Linear(256, 1),
+                        )
+                    def forward(self, x):
+                        feats = self.backbone(x)
+                        if feats.ndim == 4:
+                            feats = feats.mean(dim=(2, 3))
+                        elif feats.ndim == 3:
+                            feats = feats.mean(dim=1)
+                        return self.head(feats)
+
+                num_features = checkpoint.get('num_features', 1024)
+                dropout = checkpoint.get('dropout', 0.2)
+                backbone = timm.create_model(model_name, pretrained=False, num_classes=0)
+                cnn = PreferenceModel(backbone, num_features, dropout)
+                cnn.load_state_dict(checkpoint['model_state_dict'])
+            else:
+                # Legacy: plain timm model with num_classes=1
+                cnn = timm.create_model(model_name, pretrained=False, num_classes=checkpoint.get('num_classes', 1))
+                cnn.load_state_dict(checkpoint['model_state_dict'])
+
+            cnn.eval()
             transform = T.Compose([
-                T.Resize(int(input_size * 1.14)),
+                T.Resize(int(input_size * 1.14), interpolation=T.InterpolationMode.BICUBIC),
                 T.CenterCrop(input_size),
                 T.ToTensor(),
                 T.Normalize(mean=mean, std=std),
@@ -367,15 +400,16 @@ async def lifespan(app: FastAPI):
                 'cv_auc': checkpoint.get('cv_auc', 0),
                 'n_samples': checkpoint.get('n_samples', 0),
                 'model_name': model_name,
+                'model_class': model_class,
                 'input_size': input_size,
                 'fold_aucs': checkpoint.get('fold_aucs', []),
             }
-            print(f"[preference] CNN loaded: {model_name}, AUC={_cnn_model['cv_auc']:.4f}")
+            print(f"[preference] Vision loaded: {model_name} ({model_class}), AUC={_cnn_model['cv_auc']:.4f}")
         except Exception as e:
-            print(f"[preference] Failed to load CNN: {e}")
+            print(f"[preference] Failed to load vision model: {e}")
             _cnn_model = None
     else:
-        print(f"[preference] CNN not found at {CNN_MODEL_PATH}")
+        print(f"[preference] Vision model not found at {CNN_MODEL_PATH}")
 
     with get_sync_db(readonly=False) as conn:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_images_file_created_at ON images(file_path, created_at DESC)")
@@ -1249,8 +1283,18 @@ async def prefetch_start():
             return {"running": True, "message": "已在运行"}
         try:
             _prefetch_log = open(Path(__file__).parent / "prefetch.log", "a")
+            _prefetch_env = os.environ.copy()
+            _prefetch_env.update({
+                "OMP_NUM_THREADS": "6",
+                "MKL_NUM_THREADS": "6",
+                "TORCH_NUM_THREADS": "6",
+                "OPENBLAS_NUM_THREADS": "6",
+            })
             _prefetch_process = subprocess.Popen(
                 [
+                    "taskset", "-c", "0-5",
+                    "systemd-run", "--user", "--scope",
+                    "-p", "MemoryMax=4G",
                     "nice", "-n", "15",
                     "ionice", "-c", "3",
                     str(Path(__file__).parent / "venv" / "bin" / "python"),
@@ -1261,6 +1305,7 @@ async def prefetch_start():
                 stdout=_prefetch_log,
                 stderr=_prefetch_log,
                 start_new_session=True,
+                env=_prefetch_env,
             )
             await asyncio.sleep(1.0)
             if _prefetch_process.poll() is not None:
@@ -1897,6 +1942,27 @@ async def danbooru_candidates_mark(image_id: int):
     return {"ok": True}
 
 
+@app.post("/api/danbooru/candidates/clear")
+async def danbooru_candidates_clear():
+    """Clear all AI pre-screening candidates and reset scan position."""
+    if not CANDIDATES_DB_PATH.exists():
+        return {"ok": True, "deleted": 0}
+    loop = asyncio.get_event_loop()
+    def _clear():
+        conn = sqlite3.connect(str(CANDIDATES_DB_PATH), timeout=30)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=30000")
+        count = conn.execute("SELECT COUNT(*) FROM candidates").fetchone()[0]
+        conn.execute("DELETE FROM candidates")
+        conn.execute("CREATE TABLE IF NOT EXISTS scan_state (key TEXT PRIMARY KEY, value TEXT)")
+        conn.execute("DELETE FROM scan_state")
+        conn.commit()
+        conn.close()
+        return count
+    deleted = await loop.run_in_executor(None, _clear)
+    return {"ok": True, "deleted": deleted}
+
+
 # ---------------------------------------------------------------------------
 # Danbooru Labeler APIs (independent from crawler labeler)
 # ---------------------------------------------------------------------------
@@ -2316,6 +2382,7 @@ async def ml_models_info():
         cnn_info = {
             "loaded": True,
             "model_name": _cnn_model.get("model_name", "unknown"),
+            "model_class": _cnn_model.get("model_class", "timm"),
             "cv_auc": _cnn_model.get("cv_auc", 0),
             "n_samples": _cnn_model.get("n_samples", 0),
             "input_size": _cnn_model.get("input_size", 224),
