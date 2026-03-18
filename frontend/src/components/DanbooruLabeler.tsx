@@ -13,6 +13,7 @@ import {
   fetchPrefetchStatus,
   startPrefetch,
   stopPrefetch,
+  clearDanbooruCandidates,
   type DanbooruLabelerNextResponse,
   type DanbooruLabelerStats,
   type DanbooruLabeledImage,
@@ -840,6 +841,7 @@ function AiScreeningCard() {
   const [prefetchRunning, setPrefetchRunning] = useState(false)
   const [prefetchLoading, setPrefetchLoading] = useState(false)
   const [prefetchMsg, setPrefetchMsg] = useState<string | null>(null)
+  const [clearing, setClearing] = useState(false)
 
   useEffect(() => {
     Promise.all([
@@ -890,10 +892,41 @@ function AiScreeningCard() {
   if (!stats || stats.total === 0) {
     return (
       <div className="rounded-2xl border border-dark-700/50 bg-dark-900/50 p-5">
-        <div className="mb-2 flex items-center gap-2 text-sm text-dark-300">
-          <span>🤖</span> AI 预筛选
+        <div className="mb-3 flex items-center justify-between">
+          <div className="flex items-center gap-2 text-sm text-dark-300">
+            <span>🤖</span> AI 预筛选
+          </div>
+          <button
+            onClick={handleToggle}
+            disabled={prefetchLoading}
+            className={`
+              flex items-center gap-2 rounded-full px-3.5 py-1.5 text-xs font-medium
+              transition-all duration-200 disabled:opacity-50
+              ${prefetchRunning
+                ? 'border border-red-500/30 bg-red-500/10 text-red-300 hover:bg-red-500/20'
+                : 'border border-purple-500/30 bg-purple-500/10 text-purple-300 hover:bg-purple-500/20'
+              }
+            `}
+          >
+            {prefetchLoading ? (
+              <span className="h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
+            ) : prefetchRunning ? (
+              <span className="relative flex h-2 w-2">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-75" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-red-400" />
+              </span>
+            ) : (
+              <span className="h-2 w-2 rounded-full bg-purple-400" />
+            )}
+            {prefetchRunning ? '停止预筛选' : '开始预筛选'}
+          </button>
         </div>
-        <p className="text-xs text-dark-500">尚未运行预筛选，或候选列表为空。</p>
+        <p className="text-xs text-dark-500">
+          {prefetchRunning ? '预筛选正在运行中，候选图片即将出现…' : '尚未运行预筛选，或候选列表为空。'}
+        </p>
+        {prefetchMsg && (
+          <div className="mt-2 text-xs text-amber-400/80">{prefetchMsg}</div>
+        )}
       </div>
     )
   }
@@ -949,6 +982,27 @@ function AiScreeningCard() {
               <span className="h-2 w-2 rounded-full bg-purple-400" />
             )}
             {prefetchRunning ? '停止预筛选' : '开始预筛选'}
+          </button>
+          <button
+            onClick={async () => {
+              if (!confirm(`确定清空全部 ${stats.total.toLocaleString()} 条候选记录？扫描位置也会重置。`)) return
+              setClearing(true)
+              try {
+                await clearDanbooruCandidates()
+                setStats(await fetchDanbooruCandidatesStats())
+              } catch { /* ignore */ }
+              setClearing(false)
+            }}
+            disabled={clearing || prefetchRunning}
+            className="flex items-center gap-1.5 rounded-full border border-dark-600/50 bg-dark-800/50 px-3 py-1.5 text-xs text-dark-400 transition-all hover:border-red-500/30 hover:bg-red-500/10 hover:text-red-300 disabled:opacity-40"
+            title={prefetchRunning ? '请先停止预筛选' : '清空所有候选并重置扫描位置'}
+          >
+            {clearing ? (
+              <span className="h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
+            ) : (
+              <span>🗑</span>
+            )}
+            清空
           </button>
         </div>
       </div>

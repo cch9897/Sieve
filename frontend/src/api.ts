@@ -357,6 +357,12 @@ export async function markDanbooruCandidate(imageId: number): Promise<void> {
   await fetch(`${BASE}/api/danbooru/candidates/${imageId}/mark`, { method: 'POST' })
 }
 
+export async function clearDanbooruCandidates(): Promise<{ ok: boolean; deleted: number }> {
+  const res = await fetch(`${BASE}/api/danbooru/candidates/clear`, { method: 'POST' })
+  if (!res.ok) throw new ApiError(res.status, 'Failed to clear candidates')
+  return res.json()
+}
+
 export function getDanbooruExportUrl(verdict = 'liked', tag?: string): string {
   const sp = new URLSearchParams({ verdict })
   if (tag) sp.set('tag', tag)

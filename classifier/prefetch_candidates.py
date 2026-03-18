@@ -54,10 +54,10 @@ def _resolve(env_key, default):
     return p if p.is_absolute() else _PROJECT_ROOT / p
 
 MODEL_PATH = str(_resolve("PREFERENCE_MODEL_PATH", "classifier/model.joblib"))
-CNN_MODEL_PATH = str(_resolve("CNN_MODEL_PATH", "classifier/model_cnn.pt"))
+CNN_MODEL_PATH = str(_resolve("CNN_MODEL_PATH", "classifier/model_aesthetic.pt"))
 DANBOORU_API = os.environ.get("DANBOORU_API", "http://localhost:5001")
 CANDIDATES_DB = str(_resolve("CANDIDATES_DB", "backend/candidates.db"))
-MIN_SCORE = 0.6
+MIN_SCORE = 0.55
 BATCH_SIZE = 40
 SLEEP_BETWEEN = 1
 DANBOORU_LABELS_DB = str(_PROJECT_ROOT / "backend" / "danbooru_labels.db")
@@ -202,23 +202,56 @@ def run(total_batches=0):
     xgb_model = model_data['model']
     print(f"  XGBoost: AUC={model_data['auc']:.4f}, vocab={len(model_data['tag_vocab'])}", flush=True)
 
-    # Load CNN model
+    # Load CNN/Vision model
     cnn_model = None
     cnn_transform = None
     if os.path.exists(CNN_MODEL_PATH):
         try:
             import torch
             import timm
+            import torch.nn as tnn
             from torchvision import transforms as T
             from PIL import Image as PILImage
 
             checkpoint = torch.load(CNN_MODEL_PATH, map_location='cpu', weights_only=False)
-            cnn = timm.create_model(checkpoint['model_name'], pretrained=False, num_classes=1)
-            cnn.load_state_dict(checkpoint['model_state_dict'])
-            cnn.eval()
+            model_class = checkpoint.get('model_class', 'timm')
             input_size = checkpoint.get('input_size', 224)
+
+            if model_class == 'PreferenceModel':
+                # Custom PreferenceModel: timm backbone (num_classes=0) + head
+                class PreferenceModel(tnn.Module):
+                    def __init__(self, backbone, num_features, dropout=0.2):
+                        super().__init__()
+                        self.backbone = backbone
+                        self.head = tnn.Sequential(
+                            tnn.LayerNorm(num_features),
+                            tnn.Dropout(p=dropout),
+                            tnn.Linear(num_features, 256),
+                            tnn.GELU(),
+                            tnn.Dropout(p=dropout * 0.5),
+                            tnn.Linear(256, 1),
+                        )
+                    def forward(self, x):
+                        feats = self.backbone(x)
+                        if feats.ndim == 4:
+                            feats = feats.mean(dim=(2, 3))
+                        elif feats.ndim == 3:
+                            feats = feats.mean(dim=1)
+                        return self.head(feats)
+
+                num_features = checkpoint.get('num_features', 1024)
+                dropout = checkpoint.get('dropout', 0.2)
+                backbone = timm.create_model(checkpoint['model_name'], pretrained=False, num_classes=0)
+                cnn = PreferenceModel(backbone, num_features, dropout)
+                cnn.load_state_dict(checkpoint['model_state_dict'])
+            else:
+                # Legacy: plain timm model with num_classes=1
+                cnn = timm.create_model(checkpoint['model_name'], pretrained=False, num_classes=1)
+                cnn.load_state_dict(checkpoint['model_state_dict'])
+
+            cnn.eval()
             cnn_transform = T.Compose([
-                T.Resize(int(input_size * 1.14)),
+                T.Resize(int(input_size * 1.14), interpolation=T.InterpolationMode.BICUBIC),
                 T.CenterCrop(input_size),
                 T.ToTensor(),
                 T.Normalize(
@@ -227,11 +260,12 @@ def run(total_batches=0):
                 ),
             ])
             cnn_model = cnn
-            print(f"  CNN: {checkpoint['model_name']}, AUC={checkpoint.get('cv_auc', 0):.4f}", flush=True)
+            print(f"  Vision: {checkpoint['model_name']} ({model_class}), "
+                  f"input={input_size}, AUC={checkpoint.get('cv_auc', 0):.4f}", flush=True)
         except Exception as e:
-            print(f"  CNN load failed: {e}", flush=True)
+            print(f"  Vision model load failed: {e}", flush=True)
     else:
-        print(f"  CNN not found at {CNN_MODEL_PATH}", flush=True)
+        print(f"  Vision model not found at {CNN_MODEL_PATH}", flush=True)
 
     print(f"  Fusion: tag_weight={TAG_WEIGHT}, cnn_weight={1-TAG_WEIGHT}", flush=True)
 

@@ -33,7 +33,7 @@ DANBOORU_LIKES_DIR = Path(os.environ.get("DANBOORU_LIKES_DIR", PROJECT_ROOT / "d
 _model_path = os.environ.get("PREFERENCE_MODEL_PATH", "classifier/model.joblib")
 PREFERENCE_MODEL_PATH = Path(_model_path) if Path(_model_path).is_absolute() else PROJECT_ROOT / _model_path
 
-_cnn_path = os.environ.get("CNN_MODEL_PATH", "classifier/model_cnn.pt")
+_cnn_path = os.environ.get("CNN_MODEL_PATH", "classifier/model_aesthetic.pt")
 CNN_MODEL_PATH = Path(_cnn_path) if Path(_cnn_path).is_absolute() else PROJECT_ROOT / _cnn_path
 
 # Candidates DB
