@@ -16,6 +16,8 @@ Output: preference_train.tar.gz with images/ + manifest.csv + train.py + require
 
 import argparse
 import csv
+import hashlib
+import json
 import os
 import shutil
 import sqlite3
@@ -26,6 +28,8 @@ from pathlib import Path
 
 from PIL import Image
 
+Image.MAX_IMAGE_PIXELS = None  # allow large images (some booru images exceed default limit)
+
 _PROJECT_ROOT = Path(__file__).parent.parent
 
 # Load .env if available
@@ -35,8 +39,9 @@ try:
 except ImportError:
     pass
 
-DEFAULT_MAX_SIZE = 512
+DEFAULT_MAX_SIZE = 1024
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tiff"}
+VIDEO_EXTS = {".mp4", ".webm", ".avi", ".mov", ".mkv", ".flv"}
 
 
 def _env_path(key, default):
@@ -48,9 +53,23 @@ def _env_path(key, default):
 
 
 def resize_and_save(src: str, dst: str, max_size: int):
-    """Resize image preserving aspect ratio, save as JPEG."""
+    """Resize image preserving aspect ratio, save as JPEG. max_size=0 means raw copy."""
+    # Pre-check: skip videos that slipped through
+    if is_video(src):
+        print(f"  SKIP (video) {src}")
+        return False
+    if max_size == 0:
+        # Original resolution: raw copy, no re-encoding
+        try:
+            shutil.copy2(src, dst)
+            return True
+        except Exception as e:
+            print(f"  SKIP (copy) {Path(src).name}: {e}")
+            return False
     try:
-        img = Image.open(src).convert("RGB")
+        img = Image.open(src)
+        img.load()  # force full decode to catch truncated files early
+        img = img.convert("RGB")
         w, h = img.size
         if max(w, h) > max_size:
             ratio = max_size / max(w, h)
@@ -58,12 +77,132 @@ def resize_and_save(src: str, dst: str, max_size: int):
         img.save(dst, "JPEG", quality=85)
         return True
     except Exception as e:
-        print(f"  SKIP {src}: {e}")
+        ext = Path(src).suffix.lower()
+        reason = "corrupt/truncated" if "identify" in str(e) or "truncated" in str(e) else str(e)
+        print(f"  SKIP ({ext}) {Path(src).name}: {reason}")
         return False
+
+
+# ---------------------------------------------------------------------------
+# Incremental cache
+# ---------------------------------------------------------------------------
+
+class ResizeCache:
+    """Persistent cache for resized images. Tracks source mtime+size to detect changes."""
+
+    def __init__(self, cache_dir: Path, max_size: int):
+        self.cache_dir = cache_dir
+        self.images_dir = cache_dir / "images"
+        self.images_dir.mkdir(parents=True, exist_ok=True)
+        self.max_size = max_size
+        self.db_path = cache_dir / "cache_index.db"
+        self._init_db()
+
+    def _init_db(self):
+        self.conn = sqlite3.connect(str(self.db_path), timeout=30)
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA busy_timeout=30000")
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS cache (
+                dest_name TEXT PRIMARY KEY,
+                src_path TEXT,
+                src_mtime REAL,
+                src_size INTEGER,
+                max_size INTEGER
+            )
+        """)
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS failed (
+                dest_name TEXT PRIMARY KEY,
+                src_path TEXT,
+                src_mtime REAL,
+                src_size INTEGER
+            )
+        """)
+        self.conn.commit()
+
+    def is_cached(self, src: str, dest_name: str) -> bool:
+        """Check if source file is already cached and unchanged."""
+        try:
+            st = os.stat(src)
+        except OSError:
+            return False
+        row = self.conn.execute(
+            "SELECT src_mtime, src_size, max_size FROM cache WHERE dest_name = ?",
+            (dest_name,),
+        ).fetchone()
+        if row is None:
+            return False
+        cached_mtime, cached_size, cached_max = row
+        # Check source unchanged AND cached file still exists
+        if cached_mtime == st.st_mtime and cached_size == st.st_size and cached_max == self.max_size:
+            return (self.images_dir / dest_name).exists()
+        return False
+
+    def is_known_failed(self, src: str, dest_name: str) -> bool:
+        """Check if this source was previously known to fail."""
+        try:
+            st = os.stat(src)
+        except OSError:
+            return True  # file gone = effectively failed
+        row = self.conn.execute(
+            "SELECT src_mtime, src_size FROM failed WHERE dest_name = ?",
+            (dest_name,),
+        ).fetchone()
+        if row and row[0] == st.st_mtime and row[1] == st.st_size:
+            return True
+        return False
+
+    def record(self, src: str, dest_name: str):
+        """Record a successfully cached file."""
+        try:
+            st = os.stat(src)
+            self.conn.execute(
+                "INSERT OR REPLACE INTO cache VALUES (?, ?, ?, ?, ?)",
+                (dest_name, src, st.st_mtime, st.st_size, self.max_size),
+            )
+            self.conn.execute("DELETE FROM failed WHERE dest_name = ?", (dest_name,))
+        except OSError:
+            pass
+
+    def record_failed(self, src: str, dest_name: str):
+        """Record a file that failed to resize."""
+        try:
+            st = os.stat(src)
+            self.conn.execute(
+                "INSERT OR REPLACE INTO failed VALUES (?, ?, ?, ?)",
+                (dest_name, src, st.st_mtime, st.st_size),
+            )
+        except OSError:
+            pass
+
+    def commit(self):
+        self.conn.commit()
+
+    def prune(self, valid_names: set[str]):
+        """Remove cache entries not in valid_names (deleted/relabeled images)."""
+        all_cached = {r[0] for r in self.conn.execute("SELECT dest_name FROM cache").fetchall()}
+        stale = all_cached - valid_names
+        if stale:
+            for name in stale:
+                cached_file = self.images_dir / name
+                if cached_file.exists():
+                    cached_file.unlink()
+            ph = ",".join("?" * len(stale))
+            self.conn.execute(f"DELETE FROM cache WHERE dest_name IN ({ph})", list(stale))
+            self.conn.commit()
+            print(f"  Pruned {len(stale)} stale cache entries")
+
+    def close(self):
+        self.conn.close()
 
 
 def is_image(filename: str) -> bool:
     return Path(filename).suffix.lower() in IMAGE_EXTS
+
+
+def is_video(filename: str) -> bool:
+    return Path(filename).suffix.lower() in VIDEO_EXTS
 
 
 # ---------------------------------------------------------------------------
@@ -136,14 +275,21 @@ def collect_from_sieve_dbs() -> list[tuple]:
             if ids:
                 ph = ",".join("?" * len(ids))
                 cur.execute(f"SELECT id, file_path FROM images WHERE id IN ({ph})", ids)
+                n_skipped_video = 0
                 for img_id, fp in cur.fetchall():
+                    if is_video(fp):
+                        n_skipped_video += 1
+                        continue
                     src = str(crawler_dir / fp)
                     label = 1 if labels[img_id] == "liked" else 0
                     tasks.append((src, f"booru_{img_id}.jpg", label))
             conn_d.close()
             n_liked = sum(1 for t in tasks if t[2] == 1)
             n_disliked = sum(1 for t in tasks if t[2] == 0)
-            print(f"  Booru: {len(tasks)} ({n_liked} liked, {n_disliked} disliked)")
+            msg = f"  Booru: {len(tasks)} ({n_liked} liked, {n_disliked} disliked)"
+            if n_skipped_video:
+                msg += f", {n_skipped_video} videos skipped"
+            print(msg)
 
     # --- Twitter data ---
     twitter_dir = os.environ.get("TWITTER_DIR", "")
@@ -160,29 +306,106 @@ def collect_from_sieve_dbs() -> list[tuple]:
     danbooru_labels_db = _PROJECT_ROOT / "backend" / "danbooru_labels.db"
     danbooru_likes_dir = _env_path("DANBOORU_LIKES_DIR", "data/danbooru_liked")
     danbooru_disliked_dir = Path(os.environ.get("DANBOORU_DISLIKED_DIR", "/tmp/danbooru_disliked"))
+    danbooru_api = os.environ.get("DANBOORU_API", "")
 
     if danbooru_labels_db.exists():
         conn = sqlite3.connect(str(danbooru_labels_db))
         cur = conn.cursor()
         cur.execute('SELECT image_id, ext, verdict FROM labels WHERE verdict IN ("liked", "disliked")')
-        n_liked = n_disliked = n_missing = 0
+        n_liked = n_disliked = n_missing = n_video = 0
+        need_download: list[tuple[int, str, int]] = []  # (img_id, ext, label)
         for img_id, ext, verdict in cur.fetchall():
+            if ext and f".{ext}" in VIDEO_EXTS:
+                n_video += 1
+                continue
             label = 1 if verdict == "liked" else 0
+            # Try local files first
+            local_path = None
             if verdict == "liked" and danbooru_likes_dir:
-                src = danbooru_likes_dir / f"{img_id}.{ext}"
-            else:
-                src = danbooru_disliked_dir / f"{img_id}.{ext}"
-            if src.exists() and src.stat().st_size > 100:
-                tasks.append((str(src), f"danbooru_{img_id}.jpg", label))
+                lp = danbooru_likes_dir / f"{img_id}.{ext}"
+                if lp.exists() and lp.stat().st_size > 100:
+                    local_path = str(lp)
+            if local_path is None and danbooru_disliked_dir:
+                lp = danbooru_disliked_dir / f"{img_id}.{ext}"
+                if lp.exists() and lp.stat().st_size > 100:
+                    local_path = str(lp)
+            if local_path:
+                tasks.append((local_path, f"danbooru_{img_id}.jpg", label))
                 if label == 1:
                     n_liked += 1
                 else:
                     n_disliked += 1
             else:
-                n_missing += 1
+                need_download.append((img_id, ext or "jpg", label))
         conn.close()
+
+        # Download missing images from DanbooruFinder API
+        if need_download and danbooru_api:
+            os.makedirs(str(danbooru_disliked_dir), exist_ok=True)
+            print(f"  Danbooru: downloading {len(need_download)} missing images from API...")
+            n_downloaded = 0
+            n_dl_fail = 0
+            try:
+                import requests
+                # Clear proxy env vars to avoid routing internal requests through proxy
+                sess = requests.Session()
+                sess.trust_env = False  # ignore *_PROXY env vars
+                for i, (img_id, ext, label) in enumerate(need_download):
+                    out_path = danbooru_disliked_dir / f"{img_id}.{ext}"
+                    # Skip if already downloaded successfully
+                    if out_path.exists() and out_path.stat().st_size > 100:
+                        tasks.append((str(out_path), f"danbooru_{img_id}.jpg", label))
+                        if label == 1:
+                            n_liked += 1
+                        else:
+                            n_disliked += 1
+                        n_downloaded += 1
+                        continue
+                    # Remove stale empty files from previous failed runs
+                    if out_path.exists() and out_path.stat().st_size <= 100:
+                        out_path.unlink(missing_ok=True)
+                    try:
+                        resp = sess.get(f"{danbooru_api}/preview/{img_id}.{ext}", timeout=30)
+                        if resp.status_code == 200 and len(resp.content) > 100:
+                            out_path.write_bytes(resp.content)
+                            # Verify write succeeded
+                            if out_path.exists() and out_path.stat().st_size > 100:
+                                tasks.append((str(out_path), f"danbooru_{img_id}.jpg", label))
+                                if label == 1:
+                                    n_liked += 1
+                                else:
+                                    n_disliked += 1
+                                n_downloaded += 1
+                            else:
+                                out_path.unlink(missing_ok=True)
+                                n_dl_fail += 1
+                        else:
+                            n_dl_fail += 1
+                    except OSError as e:
+                        # Disk full or write error - clean up and abort
+                        out_path.unlink(missing_ok=True)
+                        print(f"  Disk error, aborting downloads: {e}")
+                        n_dl_fail += len(need_download) - i
+                        break
+                    except Exception:
+                        out_path.unlink(missing_ok=True)
+                        n_dl_fail += 1
+                    if (i + 1) % 200 == 0:
+                        print(f"    {i + 1}/{len(need_download)} downloaded...")
+                sess.close()
+            except ImportError:
+                print("  Warning: requests not installed, cannot download missing images")
+                n_dl_fail = len(need_download)
+            n_missing = n_dl_fail
+            print(f"  Danbooru: downloaded {n_downloaded}, failed {n_dl_fail}")
+        elif need_download:
+            n_missing = len(need_download)
+
         if n_liked + n_disliked > 0:
-            print(f"  Danbooru: {n_liked + n_disliked} ({n_liked} liked, {n_disliked} disliked, {n_missing} missing)")
+            msg = f"  Danbooru: {n_liked + n_disliked} ({n_liked} liked, {n_disliked} disliked, {n_missing} missing)"
+            if n_video:
+                msg += f", {n_video} videos skipped"
+            print(msg)
 
     return tasks
 
@@ -224,6 +447,9 @@ Examples:
                         help="Output archive path (default: classifier/preference_train.tar.gz)")
     parser.add_argument("--workers", type=int, default=8, help="Parallel resize workers")
     parser.add_argument("--no-train-script", action="store_true", help="Don't bundle train.py")
+    parser.add_argument("--cache-dir", type=Path, default=None,
+                        help="Persistent cache dir for resized images (default: classifier/_resize_cache)")
+    parser.add_argument("--no-cache", action="store_true", help="Force full rebuild, ignore cache")
     args = parser.parse_args()
 
     # Determine output path
@@ -274,31 +500,103 @@ Examples:
         print("No images found, nothing to pack.")
         sys.exit(1)
 
-    # Prepare output directory
-    if out_dir.exists():
-        shutil.rmtree(out_dir)
-    (out_dir / "images").mkdir(parents=True)
+    # Incremental cache setup
+    cache_dir = args.cache_dir or (archive.parent / "_resize_cache")
+    use_cache = not args.no_cache
 
-    # Resize images
+    if args.no_cache and cache_dir.exists():
+        shutil.rmtree(cache_dir)
+
+    cache = ResizeCache(cache_dir, args.max_size) if use_cache else None
+
+    # Resize images (incremental: skip already-cached)
     print(f"Resizing to {args.max_size}px...")
     manifest = []
-    done = 0
-    with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        futures = {}
-        for src, dst_name, label in all_tasks:
-            dst = str(out_dir / "images" / dst_name)
-            futures[pool.submit(resize_and_save, src, dst, args.max_size)] = (dst_name, label)
-        for fut in as_completed(futures):
-            dst_name, label = futures[fut]
-            if fut.result():
-                manifest.append((dst_name, label))
-                done += 1
-            if done % 500 == 0 and done > 0:
-                print(f"  {done}/{len(all_tasks)}")
+    n_cached = 0
+    n_resized = 0
+    n_failed = 0
+    all_dest_names = {t[1] for t in all_tasks}
 
-    print(f"  Done: {done}/{len(all_tasks)}")
+    # Prune stale entries from cache
+    if cache:
+        cache.prune(all_dest_names)
+
+    # Separate cached vs need-resize
+    to_resize = []
+    n_skip_failed = 0
+    for src, dst_name, label in all_tasks:
+        if cache and cache.is_cached(src, dst_name):
+            manifest.append((dst_name, label))
+            n_cached += 1
+        elif cache and cache.is_known_failed(src, dst_name):
+            n_skip_failed += 1
+        else:
+            to_resize.append((src, dst_name, label))
+
+    if n_cached or n_skip_failed:
+        parts = []
+        if n_cached:
+            parts.append(f"{n_cached} cached")
+        if n_skip_failed:
+            parts.append(f"{n_skip_failed} known-failed")
+        print(f"  Skipped: {' + '.join(parts)} / {len(all_tasks)}")
+
+    if to_resize:
+        img_dir = cache.images_dir if cache else None
+        if not cache:
+            # No cache: use temp dir
+            out_dir = archive.parent / "_tmp_pack"
+            if out_dir.exists():
+                shutil.rmtree(out_dir)
+            (out_dir / "images").mkdir(parents=True)
+            img_dir = out_dir / "images"
+
+        with ThreadPoolExecutor(max_workers=args.workers) as pool:
+            futures = {}
+            for src, dst_name, label in to_resize:
+                dst = str(img_dir / dst_name)
+                futures[pool.submit(resize_and_save, src, dst, args.max_size)] = (src, dst_name, label)
+            for fut in as_completed(futures):
+                src, dst_name, label = futures[fut]
+                if fut.result():
+                    manifest.append((dst_name, label))
+                    n_resized += 1
+                    if cache:
+                        cache.record(src, dst_name)
+                else:
+                    n_failed += 1
+                    if cache:
+                        src_path = futures[fut][0]
+                        cache.record_failed(src_path, futures[fut][1])
+                if (n_resized + n_failed) % 500 == 0 and (n_resized + n_failed) > 0:
+                    print(f"  {n_resized + n_failed}/{len(to_resize)}")
+
+        if cache:
+            cache.commit()
+
+    total_failed = n_failed + n_skip_failed
+    print(f"  Done: {n_cached} cached + {n_resized} resized + {total_failed} failed = {len(manifest)} total")
 
     # Write manifest
+    # Determine the images directory for the archive
+    if cache:
+        pack_img_dir = cache.images_dir
+    else:
+        pack_img_dir = out_dir / "images"
+
+    # Build the archive staging area
+    out_dir = archive.parent / "_tmp_pack"
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
+    out_dir.mkdir(parents=True)
+
+    # Symlink images dir from cache (fast!) or it's already there
+    if cache:
+        os.symlink(str(cache.images_dir), str(out_dir / "images"))
+    else:
+        # images are already in out_dir/images from resize step
+        pass
+
     manifest_path = out_dir / "manifest.csv"
     with open(manifest_path, "w", newline="") as f:
         w = csv.writer(f)
@@ -313,10 +611,10 @@ Examples:
         (out_dir / "requirements.txt").write_text(REQUIREMENTS)
         print("Added train.py + requirements.txt")
 
-    # Compress
+    # Compress (--dereference to follow the symlink)
     print(f"Compressing to {archive}...")
     subprocess.run(
-        ["tar", "czf", str(archive), "-C", str(out_dir.parent), out_dir.name],
+        ["tar", "czf", str(archive), "--dereference", "-C", str(out_dir.parent), out_dir.name],
         check=True,
     )
     size_mb = archive.stat().st_size / 1024 / 1024
@@ -327,8 +625,10 @@ Examples:
     print(f"  pip install -r requirements.txt")
     print(f"  python train.py")
 
-    # Cleanup
+    # Cleanup staging (keep cache!)
     shutil.rmtree(out_dir)
+    if cache:
+        cache.close()
 
 
 REQUIREMENTS = """\

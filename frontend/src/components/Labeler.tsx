@@ -177,6 +177,12 @@ function ReviewMode() {
           >
             📦 导出喜欢的
           </a>
+          <a
+            href={getExportUrl('liked', undefined, 0)}
+            className="rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-blue-500"
+          >
+            🖼️ 原始分辨率
+          </a>
         </div>
       </div>
     )
@@ -243,7 +249,24 @@ function ReviewMode() {
         {/* Image info bar */}
         <div className="flex items-center justify-between border-t border-dark-700/50 px-4 py-2 text-xs text-dark-400">
           <span>{image.source} · {image.source_id}</span>
-          <span>{image.date}</span>
+          <div className="flex items-center gap-3">
+            {image.vision_score != null && (
+              <span
+                className={[
+                  'rounded-md px-1.5 py-0.5 font-mono text-[11px] font-medium',
+                  image.vision_score >= 0.7
+                    ? 'bg-emerald-500/20 text-emerald-400'
+                    : image.vision_score >= 0.4
+                      ? 'bg-amber-500/20 text-amber-400'
+                      : 'bg-red-500/20 text-red-400',
+                ].join(' ')}
+                title="视觉模型评分"
+              >
+                🧠 {(image.vision_score * 100).toFixed(1)}%
+              </span>
+            )}
+            <span>{image.date}</span>
+          </div>
         </div>
       </div>
 
@@ -420,14 +443,20 @@ function HistoryMode() {
         ))}
         <span className="ml-auto text-xs text-dark-500">{total} 张</span>
 
-        {verdict === 'liked' && total > 0 && (
+        {verdict === 'liked' && total > 0 && (<>
           <a
             href={getExportUrl('liked')}
             className="rounded-xl bg-emerald-600/80 px-4 py-2 text-sm text-white transition-colors hover:bg-emerald-500"
           >
             📦 导出 ZIP
           </a>
-        )}
+          <a
+            href={getExportUrl('liked', undefined, 0)}
+            className="rounded-xl bg-blue-600/80 px-4 py-2 text-sm text-white transition-colors hover:bg-blue-500"
+          >
+            🖼️ 原图
+          </a>
+        </>)}
       </div>
 
       {loading ? (
@@ -457,6 +486,17 @@ function HistoryMode() {
                         <span key={t} className="rounded bg-white/20 px-1.5 py-0.5 text-[10px] text-white/80">{t}</span>
                       ))}
                     </div>
+                  </div>
+                )}
+                {/* Vision score badge */}
+                {img.vision_score != null && (
+                  <div className="absolute right-1.5 top-1.5 rounded px-1 py-0.5 font-mono text-[10px] font-medium backdrop-blur-sm"
+                    style={{
+                      background: img.vision_score >= 0.7 ? 'rgba(16,185,129,0.4)' : img.vision_score >= 0.4 ? 'rgba(245,158,11,0.4)' : 'rgba(239,68,68,0.4)',
+                      color: 'rgba(255,255,255,0.9)',
+                    }}
+                  >
+                    {(img.vision_score * 100).toFixed(0)}%
                   </div>
                 )}
                 {/* Hover overlay */}
@@ -569,6 +609,47 @@ function HistoryMode() {
                     <div className="mt-1 text-sm text-white/70">{selected.date}</div>
                   </div>
                 )}
+
+                {selected.vision_scores && Object.keys(selected.vision_scores).length > 0 ? (
+                  <div>
+                    <div className="text-xs uppercase tracking-wide text-white/40">视觉评分</div>
+                    <div className="mt-1.5 space-y-1.5">
+                      {Object.entries(selected.vision_scores).map(([model, score]) => (
+                        <div key={model} className="flex items-center gap-2">
+                          <span className="w-28 truncate text-[11px] text-white/50" title={model}>
+                            {model.replace(/^.*\//, '').slice(0, 20)}
+                          </span>
+                          <div className="h-2 flex-1 overflow-hidden rounded-full bg-white/10">
+                            <div
+                              className={[
+                                'h-full rounded-full',
+                                score >= 0.7 ? 'bg-emerald-500' : score >= 0.4 ? 'bg-amber-500' : 'bg-red-500',
+                              ].join(' ')}
+                              style={{ width: `${(score * 100).toFixed(1)}%` }}
+                            />
+                          </div>
+                          <span className="w-12 text-right font-mono text-xs text-white/80">{(score * 100).toFixed(1)}%</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : selected.vision_score != null ? (
+                  <div>
+                    <div className="text-xs uppercase tracking-wide text-white/40">视觉评分</div>
+                    <div className="mt-1 flex items-center gap-2">
+                      <div className="h-2 flex-1 overflow-hidden rounded-full bg-white/10">
+                        <div
+                          className={[
+                            'h-full rounded-full',
+                            selected.vision_score >= 0.7 ? 'bg-emerald-500' : selected.vision_score >= 0.4 ? 'bg-amber-500' : 'bg-red-500',
+                          ].join(' ')}
+                          style={{ width: `${(selected.vision_score * 100).toFixed(1)}%` }}
+                        />
+                      </div>
+                      <span className="font-mono text-sm text-white/80">{(selected.vision_score * 100).toFixed(1)}%</span>
+                    </div>
+                  </div>
+                ) : null}
 
                 {/* Tags */}
                 {selected.tags && selected.tags.length > 0 && (
@@ -878,12 +959,18 @@ function StatsMode() {
 
       {/* Export */}
       {stats.liked > 0 && (
-        <div className="flex justify-center">
+        <div className="flex flex-wrap justify-center gap-3">
           <a
             href={getExportUrl('liked')}
             className="rounded-2xl bg-emerald-600 px-6 py-3 text-sm font-medium text-white transition-colors hover:bg-emerald-500"
           >
-            📦 导出全部喜欢的图片 ({stats.liked} 张)
+            📦 导出喜欢的 ({stats.liked} 张)
+          </a>
+          <a
+            href={getExportUrl('liked', undefined, 0)}
+            className="rounded-2xl bg-blue-600 px-6 py-3 text-sm font-medium text-white transition-colors hover:bg-blue-500"
+          >
+            🖼️ 导出原始分辨率
           </a>
         </div>
       )}

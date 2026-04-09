@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
-import { fetchStats, fetchAutoTagsStats, fetchMLModels, startRetrainXGBoost, fetchRetrainStatus, startPackDataset, fetchPackStatus } from '../api'
-import type { AutoTagsStats, MLModelsInfo, MLTaskStatus } from '../api'
+import { fetchStats, fetchAutoTagsStats, fetchMLModels, startRetrainXGBoost, fetchRetrainStatus, startPackDataset, fetchPackStatus, startVisionScore, fetchVisionScoreStatus, fetchVisionModels, setActiveModel, fetchVisionScoreCompareStats, startTagTrain, fetchTagTrainStatus } from '../api'
+import type { AutoTagsStats, MLModelsInfo, MLTaskStatus, ModelsResponse, CompareStatsResponse } from '../api'
 import type { Stats } from '../types'
 import { SOURCE_META, getSourceMeta } from '../sourceMeta'
 
@@ -18,17 +18,25 @@ export default function StatsView() {
   const [mlModels, setMlModels] = useState<MLModelsInfo | null>(null)
   const [retrainStatus, setRetrainStatus] = useState<MLTaskStatus | null>(null)
   const [packStatus, setPackStatus] = useState<MLTaskStatus | null>(null)
+  const [vscoreStatus, setVscoreStatus] = useState<MLTaskStatus | null>(null)
+  const [tagTrainStatus, setTagTrainStatus] = useState<MLTaskStatus | null>(null)
+  const [visionModels, setVisionModels] = useState<ModelsResponse | null>(null)
+  const [compareStats, setCompareStats] = useState<CompareStatsResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [tooltip, setTooltip] = useState<TooltipData | null>(null)
   const chartRef = useRef<HTMLDivElement>(null)
   const retrainPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const packPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const vscorePollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const tagTrainPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   useEffect(() => {
     Promise.all([
       fetchStats().then(s => setStats(s)),
       fetchAutoTagsStats().then(s => setAutoTagsStats(s)).catch(() => {}),
       fetchMLModels().then(m => setMlModels(m)).catch(() => {}),
+      fetchVisionModels().then(m => setVisionModels(m)).catch(() => {}),
+      fetchVisionScoreCompareStats().then(s => setCompareStats(s)).catch(() => {}),
     ]).finally(() => setLoading(false))
   }, [])
 
@@ -37,6 +45,8 @@ export default function StatsView() {
     return () => {
       if (retrainPollRef.current) clearInterval(retrainPollRef.current)
       if (packPollRef.current) clearInterval(packPollRef.current)
+      if (vscorePollRef.current) clearInterval(vscorePollRef.current)
+      if (tagTrainPollRef.current) clearInterval(tagTrainPollRef.current)
     }
   }, [])
 
@@ -82,9 +92,35 @@ export default function StatsView() {
     } catch { /* ignore */ }
   }, [pollRetrain])
 
-  const handlePack = useCallback(async () => {
+  const pollVscore = useCallback(() => {
+    if (vscorePollRef.current) return
+    vscorePollRef.current = setInterval(async () => {
+      try {
+        const s = await fetchVisionScoreStatus()
+        setVscoreStatus(s)
+        if (!s.running) {
+          clearInterval(vscorePollRef.current!)
+          vscorePollRef.current = null
+        }
+      } catch { /* ignore */ }
+    }, 3000)
+  }, [])
+
+  const handleVscore = useCallback(async () => {
     try {
-      const res = await startPackDataset()
+      const res = await startVisionScore(visionModels?.active_model || undefined)
+      if (res.status === 'started') {
+        setVscoreStatus({ running: true, finished: false, exit_code: null, log: '' })
+        pollVscore()
+      } else if (res.status === 'already_running') {
+        pollVscore()
+      }
+    } catch { /* ignore */ }
+  }, [pollVscore, visionModels?.active_model])
+
+  const handlePack = useCallback(async (maxSize?: number) => {
+    try {
+      const res = await startPackDataset(maxSize)
       if (res.status === 'started') {
         setPackStatus({ running: true, finished: false, exit_code: null, log: '' })
         pollPack()
@@ -93,6 +129,32 @@ export default function StatsView() {
       }
     } catch { /* ignore */ }
   }, [pollPack])
+
+  const pollTagTrain = useCallback(() => {
+    if (tagTrainPollRef.current) return
+    tagTrainPollRef.current = setInterval(async () => {
+      try {
+        const s = await fetchTagTrainStatus()
+        setTagTrainStatus(s)
+        if (!s.running) {
+          clearInterval(tagTrainPollRef.current!)
+          tagTrainPollRef.current = null
+        }
+      } catch { /* ignore */ }
+    }, 3000)
+  }, [])
+
+  const handleTagTrain = useCallback(async () => {
+    try {
+      const res = await startTagTrain()
+      if (res.status === 'started') {
+        setTagTrainStatus({ running: true, finished: false, exit_code: null, log: '' })
+        pollTagTrain()
+      } else if (res.status === 'already_running') {
+        pollTagTrain()
+      }
+    } catch { /* ignore */ }
+  }, [pollTagTrain])
 
   const handleBarHover = useCallback((
     e: React.MouseEvent,
@@ -334,28 +396,112 @@ export default function StatsView() {
           </div>
         </div>
 
+        {/* Multi-model selector & comparison */}
+        {visionModels && Object.keys(visionModels.models).length > 0 && (
+          <div className="mt-4 rounded-2xl border border-dark-700/50 bg-dark-950/60 p-4">
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-medium text-dark-200">活跃模型</div>
+              <select
+                className="rounded-xl border border-dark-700 bg-dark-900 px-3 py-1.5 text-xs text-dark-200 focus:border-blue-500 focus:outline-none"
+                value={visionModels.active_model || ''}
+                onChange={async (e) => {
+                  try {
+                    await setActiveModel(e.target.value)
+                    const updated = await fetchVisionModels()
+                    setVisionModels(updated)
+                  } catch { /* ignore */ }
+                }}
+              >
+                {Object.entries(visionModels.models).map(([key, info]) => (
+                  <option key={key} value={key}>
+                    {key} — {info.model_class} (AUC: {info.cv_auc ? info.cv_auc.toFixed(3) : 'N/A'})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Per-model comparison stats */}
+            {compareStats && Object.keys(compareStats.models).length > 1 && (
+              <div className="mt-3 grid gap-2 md:grid-cols-2">
+                {Object.entries(compareStats.models).map(([modelName, st]) => {
+                  const shortName = modelName.split('/').pop() || modelName
+                  return (
+                    <div key={modelName} className="rounded-xl bg-dark-900/60 p-3">
+                      <div className="text-xs font-medium text-dark-300 truncate" title={modelName}>{shortName}</div>
+                      <div className="mt-2 grid grid-cols-3 gap-2 text-[11px]">
+                        <div>
+                          <div className="text-dark-500">已评分</div>
+                          <div className="font-mono text-dark-200">{st.total.toLocaleString()}</div>
+                        </div>
+                        <div>
+                          <div className="text-dark-500">均分</div>
+                          <div className="font-mono text-dark-200">{st.avg_score != null ? (st.avg_score * 100).toFixed(1) + '%' : '-'}</div>
+                        </div>
+                        <div>
+                          <div className="text-dark-500">范围</div>
+                          <div className="font-mono text-dark-200">
+                            {st.min_score != null ? (st.min_score * 100).toFixed(0) : '?'}–{st.max_score != null ? (st.max_score * 100).toFixed(0) : '?'}%
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Action buttons */}
-        <div className="mt-5 grid gap-4 md:grid-cols-2">
-          {/* Pack dataset */}
+        <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          {/* Vision score */}
           <div>
             <button
-              onClick={handlePack}
-              disabled={packStatus?.running}
+              onClick={handleVscore}
+              disabled={vscoreStatus?.running}
               className="w-full rounded-2xl border border-dark-700/50 bg-dark-950/60 px-4 py-3 text-sm font-medium text-dark-200 transition-all hover:border-dark-500/60 hover:bg-dark-900/60 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {vscoreStatus?.running ? (
+                <span className="flex items-center justify-center gap-2">
+                  <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-dark-600 border-t-purple-400" />
+                  评分中...
+                </span>
+              ) : '视觉评分'}
+            </button>
+            {vscoreStatus && !vscoreStatus.running && vscoreStatus.finished && (
+              <div className={`mt-2 rounded-xl px-3 py-2 text-xs ${vscoreStatus.exit_code === 0 ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'}`}>
+                {vscoreStatus.exit_code === 0 ? '评分完成' : `评分失败 (exit ${vscoreStatus.exit_code})`}
+              </div>
+            )}
+          </div>
+
+          {/* Pack dataset */}
+          <div className="flex gap-2">
+            <button
+              onClick={() => handlePack()}
+              disabled={packStatus?.running}
+              className="flex-1 rounded-2xl border border-dark-700/50 bg-dark-950/60 px-4 py-3 text-sm font-medium text-dark-200 transition-all hover:border-dark-500/60 hover:bg-dark-900/60 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {packStatus?.running ? (
                 <span className="flex items-center justify-center gap-2">
                   <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-dark-600 border-t-amber-400" />
                   打包中...
                 </span>
-              ) : '打包训练集'}
+              ) : '📦 打包训练集'}
             </button>
-            {packStatus && !packStatus.running && packStatus.finished && (
-              <div className={`mt-2 rounded-xl px-3 py-2 text-xs ${packStatus.exit_code === 0 ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'}`}>
-                {packStatus.exit_code === 0 ? '打包完成' : `打包失败 (exit ${packStatus.exit_code})`}
-              </div>
-            )}
+            <button
+              onClick={() => handlePack(0)}
+              disabled={packStatus?.running}
+              className="flex-1 rounded-2xl border border-dark-700/50 bg-dark-950/60 px-4 py-3 text-sm font-medium text-dark-200 transition-all hover:border-blue-500/60 hover:bg-blue-900/30 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              🖼️ 打包原图
+            </button>
           </div>
+          {packStatus && !packStatus.running && packStatus.finished && (
+            <div className={`mt-2 rounded-xl px-3 py-2 text-xs ${packStatus.exit_code === 0 ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'}`}>
+              {packStatus.exit_code === 0 ? '打包完成' : `打包失败 (exit ${packStatus.exit_code})`}
+            </div>
+          )}
 
           {/* Retrain XGBoost */}
           <div>
@@ -377,11 +523,38 @@ export default function StatsView() {
               </div>
             )}
           </div>
+
+          {/* Tag Train (incremental sync + WD14) */}
+          <div>
+            <button
+              onClick={handleTagTrain}
+              disabled={tagTrainStatus?.running}
+              className="w-full rounded-2xl border border-dark-700/50 bg-dark-950/60 px-4 py-3 text-sm font-medium text-dark-200 transition-all hover:border-pink-500/60 hover:bg-pink-900/30 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {tagTrainStatus?.running ? (
+                <span className="flex items-center justify-center gap-2">
+                  <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-dark-600 border-t-pink-400" />
+                  打标中...
+                </span>
+              ) : '🏷️ 同步打标训练集'}
+            </button>
+            {tagTrainStatus && !tagTrainStatus.running && tagTrainStatus.finished && (
+              <div className={`mt-2 rounded-xl px-3 py-2 text-xs ${tagTrainStatus.exit_code === 0 ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'}`}>
+                {tagTrainStatus.exit_code === 0 ? '打标完成 (GPU)' : `打标失败 (exit ${tagTrainStatus.exit_code})`}
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Log output */}
-        {(retrainStatus?.log || packStatus?.log) && (
+        {(retrainStatus?.log || packStatus?.log || vscoreStatus?.log || tagTrainStatus?.log) && (
           <div className="mt-4 space-y-3">
+            {vscoreStatus?.log && (
+              <div className="rounded-2xl border border-dark-700/40 bg-dark-950/80 p-3">
+                <div className="mb-2 text-[10px] uppercase tracking-wide text-dark-500">视觉评分日志</div>
+                <pre className="max-h-40 overflow-auto whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-dark-400">{vscoreStatus.log}</pre>
+              </div>
+            )}
             {packStatus?.log && (
               <div className="rounded-2xl border border-dark-700/40 bg-dark-950/80 p-3">
                 <div className="mb-2 text-[10px] uppercase tracking-wide text-dark-500">打包日志</div>
@@ -392,6 +565,12 @@ export default function StatsView() {
               <div className="rounded-2xl border border-dark-700/40 bg-dark-950/80 p-3">
                 <div className="mb-2 text-[10px] uppercase tracking-wide text-dark-500">训练日志</div>
                 <pre className="max-h-40 overflow-auto whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-dark-400">{retrainStatus.log}</pre>
+              </div>
+            )}
+            {tagTrainStatus?.log && (
+              <div className="rounded-2xl border border-dark-700/40 bg-dark-950/80 p-3">
+                <div className="mb-2 text-[10px] uppercase tracking-wide text-dark-500">打标日志</div>
+                <pre className="max-h-40 overflow-auto whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-dark-400">{tagTrainStatus.log}</pre>
               </div>
             )}
           </div>

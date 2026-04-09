@@ -126,6 +126,16 @@ export default function ImageGrid({ images, onImageClick, loading }: ImageGridPr
                     <div className="mt-1 flex items-center gap-2 text-[11px] text-white/60">
                       {img.date && <span>{img.date}</span>}
                       {img.subfolder && <span className="truncate">{img.subfolder}</span>}
+                      {img.vision_score != null && (
+                        <span className={[
+                          'ml-auto rounded px-1 py-0.5 font-mono text-[10px] font-medium',
+                          img.vision_score >= 0.7 ? 'bg-emerald-500/30 text-emerald-300'
+                            : img.vision_score >= 0.4 ? 'bg-amber-500/30 text-amber-300'
+                            : 'bg-red-500/30 text-red-300',
+                        ].join(' ')}>
+                          🧠{(img.vision_score * 100).toFixed(0)}%
+                        </span>
+                      )}
                     </div>
                     {batchTags[String(img.id)]?.top_tags && (
                       <div className="mt-1.5 flex flex-wrap gap-1">

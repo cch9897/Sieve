@@ -36,6 +36,9 @@ PREFERENCE_MODEL_PATH = Path(_model_path) if Path(_model_path).is_absolute() els
 _cnn_path = os.environ.get("CNN_MODEL_PATH", "classifier/model_aesthetic.pt")
 CNN_MODEL_PATH = Path(_cnn_path) if Path(_cnn_path).is_absolute() else PROJECT_ROOT / _cnn_path
 
+_siglip2_path = os.environ.get("SIGLIP2_MODEL_PATH", "classifier/model_siglip2_naflex.pt")
+SIGLIP2_MODEL_PATH = Path(_siglip2_path) if Path(_siglip2_path).is_absolute() else PROJECT_ROOT / _siglip2_path
+
 # Candidates DB
 _candidates = os.environ.get("CANDIDATES_DB", "backend/candidates.db")
 CANDIDATES_DB_PATH = Path(_candidates) if Path(_candidates).is_absolute() else PROJECT_ROOT / _candidates

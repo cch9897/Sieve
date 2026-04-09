@@ -9,6 +9,8 @@ export interface ImageItem {
   subfolder: string | null
   is_video: boolean
   thumb_url: string
+  vision_score?: number | null
+  vision_scores?: Record<string, number>
 }
 
 export interface ImageDetail extends ImageItem {

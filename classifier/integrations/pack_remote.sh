@@ -23,7 +23,7 @@ if [ -f "$PROJECT_ROOT/.env" ]; then
 fi
 
 TOYSERVER="${TOYSERVER_HOST:?Set TOYSERVER_HOST in .env}"
-REMOTE_WORK="${REMOTE_WORK_DIR:-/home/cch/_tmp_pack_work}"
+REMOTE_WORK="${REMOTE_WORK_DIR:-/home/cch-claw/_tmp_pack_work}"
 LOCAL_WORK="$CLASSIFIER_DIR/_tmp_pack_local"
 ARCHIVE="$CLASSIFIER_DIR/preference_train.tar.gz"
 MAX_SIZE=512
@@ -125,7 +125,7 @@ cat > "$LOCAL_WORK/_remote_pack.py" <<'REMOTEPY'
 import csv, json, os, shutil, sqlite3, subprocess
 from PIL import Image
 
-WORK = os.environ.get("WORK_DIR", "/home/cch/_tmp_pack_work")
+WORK = os.environ.get("WORK_DIR", "/home/cch-claw/_tmp_pack_work")
 TAR_INDEX_DB = os.environ.get("TAR_INDEX_DB", "")
 MAX_SIZE = 512
 OUT = os.path.join(WORK, "preference_train")

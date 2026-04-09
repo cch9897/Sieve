@@ -1,8 +1,8 @@
 import { useEffect, useCallback, useRef, useState } from 'react'
 import type { ImageItem } from '../types'
 import { getSourceMeta } from '../sourceMeta'
-import { fetchAutoTags } from '../api'
-import type { AutoTagsDetail } from '../api'
+import { fetchAutoTags, fetchVisionScoreCompare } from '../api'
+import type { AutoTagsDetail, VisionScoreCompare } from '../api'
 
 const RATING_COLORS: Record<string, string> = {
   general: 'border-green-500/40 bg-green-500/15 text-green-400',
@@ -71,15 +71,20 @@ export default function Lightbox({ image, images, onClose, onNavigate }: Lightbo
 
   const [autoTags, setAutoTags] = useState<AutoTagsDetail | null>(null)
   const [tagsLoading, setTagsLoading] = useState(false)
+  const [multiScores, setMultiScores] = useState<VisionScoreCompare | null>(null)
 
   useEffect(() => {
-    if (!image) { setAutoTags(null); return }
+    if (!image) { setAutoTags(null); setMultiScores(null); return }
     setTagsLoading(true)
     setAutoTags(null)
+    setMultiScores(null)
     fetchAutoTags(image.id)
       .then(t => setAutoTags(t))
       .catch(() => setAutoTags(null))
       .finally(() => setTagsLoading(false))
+    fetchVisionScoreCompare(image.id)
+      .then(s => setMultiScores(s))
+      .catch(() => setMultiScores(null))
   }, [image?.id])
 
   const touchStart = useRef<{ x: number; y: number } | null>(null)
@@ -177,6 +182,47 @@ export default function Lightbox({ image, images, onClose, onNavigate }: Lightbo
                 <div>
                   <div className="text-xs uppercase tracking-wide text-white/40">日期</div>
                   <div className="mt-1 text-sm text-white/80">{image.date}</div>
+                </div>
+              )}
+
+              {(image.vision_score != null || (multiScores && Object.keys(multiScores.scores).length > 0)) && (
+                <div>
+                  <div className="text-xs uppercase tracking-wide text-white/40">视觉评分</div>
+                  {multiScores && Object.keys(multiScores.scores).length > 1 ? (
+                    <div className="mt-1 space-y-1.5">
+                      {Object.entries(multiScores.scores).map(([modelName, info]) => {
+                        const shortName = modelName.split('/').pop() || modelName
+                        return (
+                          <div key={modelName} className="flex items-center gap-2">
+                            <span className="w-20 truncate text-[11px] text-white/50" title={modelName}>{shortName}</span>
+                            <div className="h-2 flex-1 overflow-hidden rounded-full bg-white/10">
+                              <div
+                                className={[
+                                  'h-full rounded-full transition-all',
+                                  info.score >= 0.7 ? 'bg-emerald-500' : info.score >= 0.4 ? 'bg-amber-500' : 'bg-red-500',
+                                ].join(' ')}
+                                style={{ width: `${(info.score * 100).toFixed(1)}%` }}
+                              />
+                            </div>
+                            <span className="font-mono text-[11px] text-white/80 w-12 text-right">{(info.score * 100).toFixed(1)}%</span>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  ) : image.vision_score != null ? (
+                    <div className="mt-1 flex items-center gap-2">
+                      <div className="h-2 flex-1 overflow-hidden rounded-full bg-white/10">
+                        <div
+                          className={[
+                            'h-full rounded-full transition-all',
+                            image.vision_score >= 0.7 ? 'bg-emerald-500' : image.vision_score >= 0.4 ? 'bg-amber-500' : 'bg-red-500',
+                          ].join(' ')}
+                          style={{ width: `${(image.vision_score * 100).toFixed(1)}%` }}
+                        />
+                      </div>
+                      <span className="font-mono text-sm text-white/80">{(image.vision_score * 100).toFixed(1)}%</span>
+                    </div>
+                  ) : null}
                 </div>
               )}
 

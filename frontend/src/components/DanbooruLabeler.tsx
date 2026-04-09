@@ -14,10 +14,25 @@ import {
   startPrefetch,
   stopPrefetch,
   clearDanbooruCandidates,
+  fetchGpuConfig,
+  updateGpuConfig,
+  testGpuConnection,
+  fetchInferenceStatus,
+  setInferenceMode,
+  fetchVisionModels,
+  setActiveModel,
+  startCandidatesRescore,
+  fetchRescoreStatus,
   type DanbooruLabelerNextResponse,
   type DanbooruLabelerStats,
   type DanbooruLabeledImage,
   type DanbooruCandidatesStats,
+  type HistogramBin,
+  type CIStats,
+  type GpuConfig,
+  type InferenceStatus,
+  type InferenceMode,
+  type PrefetchMode,
 } from '../api'
 
 type DanbooruReviewImage = NonNullable<DanbooruLabelerNextResponse['image']>
@@ -140,6 +155,8 @@ function ReviewMode() {
   const [ratingFilter, setRatingFilter] = useState<string>('')
   const [minScore, setMinScore] = useState<number>(0)
   const [minScoreDisplay, setMinScoreDisplay] = useState<number>(0)
+  const [minAes, setMinAes] = useState<number | undefined>(undefined)
+  const [minAesDisplay, setMinAesDisplay] = useState<number>(0)
   const [lastAction, setLastAction] = useState<{ imageId: number; verdict: string } | null>(null)
   const [slideDir, setSlideDir] = useState<'left' | 'right' | 'up' | ''>('')
   const [source, setSource] = useState<'random' | 'ai'>('random')
@@ -157,6 +174,7 @@ function ReviewMode() {
           media: mediaFilter || undefined,
           rating: ratingFilter || undefined,
           min_score: minScore > 0 ? minScore / 100 : undefined,
+          min_aes: minAes,
         })
       } else {
         res = await fetchDanbooruLabelerNext({
@@ -173,7 +191,7 @@ function ReviewMode() {
     } finally {
       setLoading(false)
     }
-  }, [mediaFilter, ratingFilter, minScore, source])
+  }, [mediaFilter, ratingFilter, minScore, minAes, source])
 
   useEffect(() => { loadNext() }, [loadNext])
 
@@ -274,6 +292,12 @@ function ReviewMode() {
           >
             📦 导出喜欢的
           </a>
+          <a
+            href={getDanbooruExportUrl('liked', undefined, 0)}
+            className="rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-blue-500"
+          >
+            🖼️ 原始分辨率
+          </a>
         </div>
       </div>
     )
@@ -361,6 +385,33 @@ function ReviewMode() {
               🤖 AI推荐
             </button>
           </div>
+
+          {/* Aesthetic score slider — AI mode only */}
+          {source === 'ai' && (
+            <>
+              <span className="text-dark-700">|</span>
+              <div className="flex items-center gap-2">
+                <span className="text-dark-500">Aes≥</span>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={minAesDisplay}
+                  onChange={e => setMinAesDisplay(Number(e.target.value))}
+                  onMouseUp={e => {
+                    const v = Number((e.target as HTMLInputElement).value)
+                    setMinAes(v > 0 ? v / 100 : undefined)
+                  }}
+                  onTouchEnd={e => {
+                    const v = Number((e.target as HTMLInputElement).value)
+                    setMinAes(v > 0 ? v / 100 : undefined)
+                  }}
+                  className="h-1 w-24 appearance-none rounded-full bg-dark-700 accent-pink-500"
+                />
+                <span className="min-w-[3ch] text-pink-300">{minAesDisplay}%</span>
+              </div>
+            </>
+          )}
         </div>
       </div>
 
@@ -409,6 +460,11 @@ function ReviewMode() {
                 'border-red-500/30 bg-red-500/20 text-red-300'
               }`}>
                 🤖 {((image as any).preference_score * 100).toFixed(0)}%
+              </span>
+            )}
+            {source === 'ai' && (image as any).aesthetic_score != null && (
+              <span className="rounded border border-pink-500/30 bg-pink-500/20 px-1.5 py-0.5 text-[11px] font-semibold tabular-nums text-pink-300">
+                🎨 {((image as any).aesthetic_score * 100).toFixed(0)}%
               </span>
             )}
           </div>
@@ -597,14 +653,20 @@ function HistoryMode() {
         ))}
         <span className="ml-auto text-xs text-dark-500">{total} 张</span>
 
-        {verdict === 'liked' && total > 0 && (
+        {verdict === 'liked' && total > 0 && (<>
           <a
             href={getDanbooruExportUrl('liked')}
             className="rounded-xl bg-emerald-600/80 px-4 py-2 text-sm text-white transition-colors hover:bg-emerald-500"
           >
             📦 导出 ZIP
           </a>
-        )}
+          <a
+            href={getDanbooruExportUrl('liked', undefined, 0)}
+            className="rounded-xl bg-blue-600/80 px-4 py-2 text-sm text-white transition-colors hover:bg-blue-500"
+          >
+            🖼️ 原图
+          </a>
+        </>)}
       </div>
 
       {loading ? (
@@ -630,6 +692,16 @@ function HistoryMode() {
                     <span className="text-[11px] text-white/70">★ {img.score}</span>
                   </div>
                 </div>
+                {img.vision_score != null && (
+                  <div className="absolute right-1.5 top-1.5 rounded px-1 py-0.5 font-mono text-[10px] font-medium backdrop-blur-sm"
+                    style={{
+                      background: img.vision_score >= 0.7 ? 'rgba(16,185,129,0.4)' : img.vision_score >= 0.4 ? 'rgba(245,158,11,0.4)' : 'rgba(239,68,68,0.4)',
+                      color: 'rgba(255,255,255,0.9)',
+                    }}
+                  >
+                    🧠{(img.vision_score * 100).toFixed(0)}%
+                  </div>
+                )}
                 <div className="absolute inset-0 flex items-center justify-center bg-black/0 opacity-0 transition-all group-hover:bg-black/30 group-hover:opacity-100">
                   <span className="text-2xl drop-shadow-lg">🔍</span>
                 </div>
@@ -730,6 +802,24 @@ function HistoryMode() {
                     <span>Score: {selected.score}</span>
                   </div>
                 </div>
+
+                {selected.vision_score != null && (
+                  <div>
+                    <div className="text-xs uppercase tracking-wide text-white/40">视觉评分</div>
+                    <div className="mt-1 flex items-center gap-2">
+                      <div className="h-2 flex-1 overflow-hidden rounded-full bg-white/10">
+                        <div
+                          className={[
+                            'h-full rounded-full',
+                            selected.vision_score >= 0.7 ? 'bg-emerald-500' : selected.vision_score >= 0.4 ? 'bg-amber-500' : 'bg-red-500',
+                          ].join(' ')}
+                          style={{ width: `${(selected.vision_score * 100).toFixed(1)}%` }}
+                        />
+                      </div>
+                      <span className="font-mono text-sm text-white/80">{(selected.vision_score * 100).toFixed(1)}%</span>
+                    </div>
+                  </div>
+                )}
 
                 {/* Danbooru tags from stored data */}
                 {selected.danbooru_tags && (
@@ -835,6 +925,480 @@ function getRatingMeta(r: string) {
   return RATING_META[r] || { label: r, color: '#94a3b8' }
 }
 
+function GpuSettingsPanel({ prefetchRunning }: { prefetchRunning: boolean }) {
+  const [infStatus, setInfStatus] = useState<InferenceStatus | null>(null)
+  const [gpu, setGpu] = useState<GpuConfig | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [switching, setSwitching] = useState(false)
+  const [switchError, setSwitchError] = useState('')
+  const [urlInput, setUrlInput] = useState('')
+  const [batchInput, setBatchInput] = useState(16)
+  const [saving, setSaving] = useState(false)
+  const [testing, setTesting] = useState(false)
+  const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null)
+  const [expanded, setExpanded] = useState(false)
+
+  useEffect(() => {
+    Promise.all([
+      fetchInferenceStatus().then(setInfStatus).catch(() => {}),
+      fetchGpuConfig().then(cfg => {
+        setGpu(cfg)
+        setUrlInput(cfg.url)
+        setBatchInput(cfg.batch_size)
+      }).catch(() => {}),
+    ]).finally(() => setLoading(false))
+  }, [])
+
+  const handleModeSwitch = async (mode: InferenceMode) => {
+    setSwitching(true)
+    setSwitchError('')
+    try {
+      const res = await setInferenceMode(mode)
+      setInfStatus(prev => prev ? { ...prev, inference_mode: res.inference_mode, current_device: res.current_device, cuda_info: res.cuda_info } : prev)
+      // Sync gpu config state
+      fetchGpuConfig().then(cfg => { setGpu(cfg); setUrlInput(cfg.url); setBatchInput(cfg.batch_size) }).catch(() => {})
+    } catch (e: any) {
+      setSwitchError(e?.message || '切换失败')
+    }
+    setSwitching(false)
+  }
+
+  const handleSaveRemote = async () => {
+    setSaving(true)
+    setTestResult(null)
+    try {
+      const updated = await updateGpuConfig({ url: urlInput, batch_size: batchInput })
+      setGpu({ ...updated, remote_health: gpu?.remote_health ?? null })
+    } catch { /* ignore */ }
+    setSaving(false)
+  }
+
+  const handleTest = async () => {
+    setTesting(true)
+    setTestResult(null)
+    try {
+      await updateGpuConfig({ url: urlInput, batch_size: batchInput })
+      const res = await testGpuConnection()
+      if (res.ok) {
+        const h = res.health
+        setTestResult({
+          ok: true,
+          msg: `✅ 连接成功 · ${h?.model_name || '?'} · ${h?.device || '?'}${h?.fp16 ? ' · FP16' : ''}`
+            + (h?.cv_auc ? ` · AUC ${(h.cv_auc * 100).toFixed(1)}%` : '')
+            + (h?.gpu_memory_mb ? ` · ${h.gpu_memory_mb.toFixed(0)}MB` : ''),
+        })
+        fetchGpuConfig().then(setGpu).catch(() => {})
+      } else {
+        setTestResult({ ok: false, msg: `❌ ${res.error || '连接失败'}` })
+      }
+    } catch (e: any) {
+      setTestResult({ ok: false, msg: `❌ ${e?.message || '请求失败'}` })
+    }
+    setTesting(false)
+  }
+
+  if (loading) return null
+
+  const currentMode = infStatus?.inference_mode || 'cpu'
+
+  const modeOptions: { key: InferenceMode; label: string; icon: string; desc: string; color: string; disabledReason?: string }[] = [
+    { key: 'cpu', label: 'CPU', icon: '🖥', desc: '本机 CPU 推理', color: 'blue' },
+    {
+      key: 'local_gpu',
+      label: '本地 GPU',
+      icon: '🎮',
+      desc: infStatus?.cuda_info ? `${infStatus.cuda_info.device_name} · ${infStatus.cuda_info.total_memory_mb}MB` : 'CUDA 设备',
+      color: 'emerald',
+      disabledReason: !infStatus?.cuda_available ? 'CUDA 不可用' : undefined,
+    },
+    { key: 'remote', label: '远程 GPU', icon: '🌐', desc: gpu?.url || '未配置', color: 'purple' },
+  ]
+
+  return (
+    <div className="mt-3 rounded-xl border border-dark-700/30 bg-dark-950/50 p-3">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="flex w-full items-center justify-between text-xs text-dark-400 hover:text-dark-200 transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          <span>⚡</span>
+          <span>推理模式</span>
+          <span className={`rounded-full px-2 py-0.5 text-[10px] ${
+            currentMode === 'local_gpu' ? 'bg-emerald-500/20 text-emerald-300' :
+            currentMode === 'remote' ? 'bg-purple-500/20 text-purple-300' :
+            'bg-blue-500/20 text-blue-300'
+          }`}>
+            {currentMode === 'local_gpu' ? '🎮 本地 GPU' : currentMode === 'remote' ? '🌐 远程' : '🖥 CPU'}
+          </span>
+          {infStatus?.current_device === 'cuda' && infStatus?.cuda_info && (
+            <span className="text-[10px] text-dark-500">
+              {infStatus.cuda_info.device_name} · {infStatus.cuda_info.allocated_mb}MB used
+            </span>
+          )}
+        </div>
+        <svg
+          className={`h-4 w-4 transition-transform ${expanded ? 'rotate-180' : ''}`}
+          viewBox="0 0 20 20" fill="currentColor"
+        >
+          <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" />
+        </svg>
+      </button>
+
+      {expanded && (
+        <div className="mt-3 space-y-3">
+          {/* Mode selector */}
+          <div className="grid grid-cols-3 gap-2">
+            {modeOptions.map(opt => {
+              const active = currentMode === opt.key
+              const disabled = switching || !!opt.disabledReason
+              return (
+                <button
+                  key={opt.key}
+                  onClick={() => !active && !disabled && handleModeSwitch(opt.key)}
+                  disabled={disabled}
+                  className={[
+                    'relative rounded-xl border p-3 text-left transition-all',
+                    active
+                      ? `border-${opt.color}-500/50 bg-${opt.color}-500/10 ring-1 ring-${opt.color}-500/20`
+                      : 'border-dark-700/50 bg-dark-900/30 hover:border-dark-500/70',
+                    disabled && !active ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer',
+                  ].join(' ')}
+                  title={opt.disabledReason || ''}
+                >
+                  {switching && currentMode !== opt.key && !active && (
+                    <span className="absolute right-2 top-2 h-3 w-3 animate-spin rounded-full border-2 border-dark-500 border-t-transparent" />
+                  )}
+                  <div className="text-base">{opt.icon}</div>
+                  <div className={`mt-1 text-xs font-medium ${active ? 'text-dark-100' : 'text-dark-300'}`}>{opt.label}</div>
+                  <div className="mt-0.5 text-[10px] text-dark-500 truncate">{opt.disabledReason || opt.desc}</div>
+                  {active && (
+                    <div className={`absolute right-2 top-2 h-2 w-2 rounded-full bg-${opt.color}-400`} />
+                  )}
+                </button>
+              )
+            })}
+          </div>
+
+          {switching && (
+            <div className="flex items-center gap-2 text-xs text-dark-400">
+              <span className="h-3 w-3 animate-spin rounded-full border-2 border-dark-500 border-t-blue-400" />
+              模型迁移中…
+            </div>
+          )}
+
+          {switchError && (
+            <div className="rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2 text-xs text-red-300">
+              ❌ {switchError}
+            </div>
+          )}
+
+          {/* CUDA device info */}
+          {infStatus?.cuda_available && infStatus.cuda_info && (
+            <div className="rounded-lg border border-dark-700/30 bg-dark-900/30 px-3 py-2">
+              <div className="flex items-center justify-between text-[11px]">
+                <span className="text-dark-500">CUDA 设备</span>
+                <span className="text-dark-300">{infStatus.cuda_info.device_name}</span>
+              </div>
+              <div className="mt-1 flex items-center justify-between text-[11px]">
+                <span className="text-dark-500">显存</span>
+                <span className="text-dark-300">{infStatus.cuda_info.allocated_mb}MB / {infStatus.cuda_info.total_memory_mb}MB</span>
+              </div>
+              {infStatus.cnn_loaded && (
+                <div className="mt-1 flex items-center justify-between text-[11px]">
+                  <span className="text-dark-500">当前设备</span>
+                  <span className={`font-mono ${infStatus.current_device === 'cuda' ? 'text-emerald-400' : 'text-blue-400'}`}>{infStatus.current_device}</span>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Remote GPU config — only show when remote mode */}
+          {currentMode === 'remote' && (
+            <div className="space-y-2 rounded-lg border border-purple-500/10 bg-purple-500/5 p-3">
+              <div className="text-[11px] font-medium text-purple-300/80">远程 GPU 服务器配置</div>
+              <div className="flex items-center gap-2">
+                <label className="shrink-0 text-xs text-dark-500 w-14">地址</label>
+                <input
+                  value={urlInput}
+                  onChange={e => setUrlInput(e.target.value)}
+                  placeholder="http://192.168.x.x:5099"
+                  className="flex-1 rounded-lg border border-dark-700 bg-dark-900 px-3 py-1.5 text-sm text-dark-100 placeholder:text-dark-600 focus:border-purple-500/50 focus:outline-none"
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <label className="shrink-0 text-xs text-dark-500 w-14">Batch</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={64}
+                  value={batchInput}
+                  onChange={e => setBatchInput(Number(e.target.value))}
+                  className="w-20 rounded-lg border border-dark-700 bg-dark-900 px-3 py-1.5 text-sm text-dark-100 focus:border-purple-500/50 focus:outline-none"
+                />
+                <span className="text-[10px] text-dark-600">张/请求 (1-64)</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleSaveRemote}
+                  disabled={saving}
+                  className="rounded-lg border border-dark-600 bg-dark-800 px-3 py-1.5 text-xs text-dark-300 transition-all hover:bg-dark-700 hover:text-dark-100 disabled:opacity-50"
+                >
+                  {saving ? '保存中…' : '💾 保存'}
+                </button>
+                <button
+                  onClick={handleTest}
+                  disabled={testing || !urlInput}
+                  className="rounded-lg border border-purple-500/30 bg-purple-500/10 px-3 py-1.5 text-xs text-purple-300 transition-all hover:bg-purple-500/20 disabled:opacity-50"
+                >
+                  {testing ? (
+                    <span className="flex items-center gap-1.5">
+                      <span className="h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                      测试中…
+                    </span>
+                  ) : '🔌 测试连接'}
+                </button>
+              </div>
+              {testResult && (
+                <div className={`rounded-lg px-3 py-2 text-xs ${
+                  testResult.ok
+                    ? 'border border-emerald-500/20 bg-emerald-500/5 text-emerald-300'
+                    : 'border border-red-500/20 bg-red-500/5 text-red-300'
+                }`}>
+                  {testResult.msg}
+                </div>
+              )}
+            </div>
+          )}
+
+          {prefetchRunning && (
+            <div className="text-[10px] text-amber-400/70">
+              ⚠ 预筛选正在运行，模式切换将在下次启动时生效
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** Score distribution histogram with 95% CI, IQR, and key percentiles */
+function ScoreHistogram({ histogram, ci }: { histogram: HistogramBin[]; ci: CIStats }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [tooltip, setTooltip] = useState<{ x: number; text: string } | null>(null)
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    const container = containerRef.current
+    if (!canvas || !container) return
+
+    const dpr = window.devicePixelRatio || 1
+    const width = container.offsetWidth
+    const height = 200
+    canvas.width = width * dpr
+    canvas.height = height * dpr
+    canvas.style.width = `${width}px`
+    canvas.style.height = `${height}px`
+
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    ctx.scale(dpr, dpr)
+
+    const pad = { top: 24, right: 16, bottom: 32, left: 44 }
+    const plotW = width - pad.left - pad.right
+    const plotH = height - pad.top - pad.bottom
+
+    const maxCount = Math.max(...histogram.map(b => b.count), 1)
+
+    // Clear
+    ctx.clearRect(0, 0, width, height)
+
+    // Helper: score → x
+    const sx = (v: number) => pad.left + v * plotW
+    // Helper: count → y
+    const cy = (c: number) => pad.top + plotH - (c / maxCount) * plotH
+
+    // Draw IQR shaded region (p25-p75)
+    ctx.fillStyle = 'rgba(139, 92, 246, 0.08)'
+    ctx.fillRect(sx(ci.p25), pad.top, sx(ci.p75) - sx(ci.p25), plotH)
+
+    // Draw 95% CI band
+    ctx.fillStyle = 'rgba(52, 211, 153, 0.15)'
+    ctx.fillRect(sx(ci.ci95_lo), pad.top, sx(ci.ci95_hi) - sx(ci.ci95_lo), plotH)
+
+    // Draw histogram bars (stacked: accepted on top, rejected on bottom)
+    const binW = plotW / histogram.length
+    histogram.forEach((bin, i) => {
+      if (bin.count === 0) return
+      const x = pad.left + i * binW
+
+      // Rejected portion (bottom, muted)
+      if (bin.rejected > 0) {
+        const rejH = (bin.rejected / maxCount) * plotH
+        const rejY = pad.top + plotH - rejH
+        ctx.fillStyle = 'rgba(100, 116, 139, 0.35)'
+        ctx.fillRect(x + 0.5, rejY, binW - 1, rejH)
+      }
+
+      // Accepted portion (stacked on top of rejected)
+      if (bin.accepted > 0) {
+        const totalH = (bin.count / maxCount) * plotH
+        const accH = (bin.accepted / maxCount) * plotH
+        const accY = pad.top + plotH - totalH // top of full bar
+
+        const score = (bin.lo + bin.hi) / 2
+        let color: string
+        if (score >= 0.8) color = 'rgba(52, 211, 153, 0.75)'
+        else if (score >= 0.6) color = 'rgba(96, 165, 250, 0.65)'
+        else if (score >= 0.4) color = 'rgba(251, 191, 36, 0.55)'
+        else color = 'rgba(248, 113, 113, 0.5)'
+
+        ctx.fillStyle = color
+        ctx.fillRect(x + 0.5, accY, binW - 1, accH)
+      }
+    })
+
+    // Mean line
+    ctx.strokeStyle = 'rgba(251, 191, 36, 0.9)'
+    ctx.lineWidth = 2
+    ctx.setLineDash([6, 3])
+    const mx = sx(ci.mean)
+    ctx.beginPath()
+    ctx.moveTo(mx, pad.top)
+    ctx.lineTo(mx, pad.top + plotH)
+    ctx.stroke()
+    ctx.setLineDash([])
+
+    // Median line
+    ctx.strokeStyle = 'rgba(139, 92, 246, 0.9)'
+    ctx.lineWidth = 1.5
+    ctx.setLineDash([4, 4])
+    const medX = sx(ci.median)
+    ctx.beginPath()
+    ctx.moveTo(medX, pad.top)
+    ctx.lineTo(medX, pad.top + plotH)
+    ctx.stroke()
+    ctx.setLineDash([])
+
+    // P10 / P90 ticks
+    ctx.strokeStyle = 'rgba(148, 163, 184, 0.4)'
+    ctx.lineWidth = 1
+    ctx.setLineDash([2, 4])
+    for (const p of [ci.p10, ci.p90]) {
+      const px = sx(p)
+      ctx.beginPath()
+      ctx.moveTo(px, pad.top)
+      ctx.lineTo(px, pad.top + plotH)
+      ctx.stroke()
+    }
+    ctx.setLineDash([])
+
+    // X-axis labels
+    ctx.fillStyle = 'rgba(148, 163, 184, 0.6)'
+    ctx.font = '10px system-ui, sans-serif'
+    ctx.textAlign = 'center'
+    for (let v = 0; v <= 1; v += 0.2) {
+      const x = sx(v)
+      ctx.fillText(`${(v * 100).toFixed(0)}%`, x, height - 8)
+      // Tick
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.15)'
+      ctx.beginPath()
+      ctx.moveTo(x, pad.top + plotH)
+      ctx.lineTo(x, pad.top + plotH + 4)
+      ctx.stroke()
+    }
+
+    // Y-axis labels
+    ctx.textAlign = 'right'
+    ctx.fillStyle = 'rgba(148, 163, 184, 0.6)'
+    const yTicks = 4
+    for (let i = 0; i <= yTicks; i++) {
+      const val = Math.round((maxCount / yTicks) * i)
+      const y = cy(val)
+      ctx.fillText(val.toLocaleString(), pad.left - 6, y + 3)
+      // Grid line
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.06)'
+      ctx.beginPath()
+      ctx.moveTo(pad.left, y)
+      ctx.lineTo(width - pad.right, y)
+      ctx.stroke()
+    }
+  }, [histogram, ci])
+
+  const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current
+    const container = containerRef.current
+    if (!canvas || !container) return
+    const rect = canvas.getBoundingClientRect()
+    const x = e.clientX - rect.left
+    const pad = { left: 44, right: 16 }
+    const plotW = container.offsetWidth - pad.left - pad.right
+    const relX = (x - pad.left) / plotW
+    if (relX < 0 || relX > 1) { setTooltip(null); return }
+    const binIdx = Math.min(Math.floor(relX * histogram.length), histogram.length - 1)
+    const bin = histogram[binIdx]
+    const parts = [`${(bin.lo * 100).toFixed(0)}-${(bin.hi * 100).toFixed(0)}%: ${bin.count} 张`]
+    if (bin.accepted > 0 || bin.rejected > 0) {
+      parts.push(`✓${bin.accepted} ✗${bin.rejected}`)
+    }
+    setTooltip({
+      x: e.clientX - rect.left,
+      text: parts.join(' · '),
+    })
+  }
+
+  return (
+    <div className="mb-4">
+      <div className="mb-2 flex items-center justify-between">
+        <div className="text-xs text-dark-500">分数分布直方图</div>
+        <div className="flex flex-wrap items-center gap-3 text-[10px] text-dark-500">
+          <span className="flex items-center gap-1">
+            <span className="inline-block h-2 w-3 rounded-sm" style={{ background: 'rgba(96, 165, 250, 0.65)' }} /> 入选
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="inline-block h-2 w-3 rounded-sm" style={{ background: 'rgba(100, 116, 139, 0.35)' }} /> 未入选
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="inline-block h-0.5 w-3" style={{ background: 'rgba(251, 191, 36, 0.9)' }} /> 均值 {(ci.mean * 100).toFixed(1)}%
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="inline-block h-0.5 w-3" style={{ background: 'rgba(139, 92, 246, 0.9)', borderTop: '1px dashed' }} /> 中位数 {(ci.median * 100).toFixed(1)}%
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="inline-block h-2 w-3 rounded-sm" style={{ background: 'rgba(52, 211, 153, 0.15)' }} /> 95% CI
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="inline-block h-2 w-3 rounded-sm" style={{ background: 'rgba(139, 92, 246, 0.08)' }} /> IQR
+          </span>
+        </div>
+      </div>
+      <div ref={containerRef} className="relative">
+        <canvas
+          ref={canvasRef}
+          onMouseMove={handleMouseMove}
+          onMouseLeave={() => setTooltip(null)}
+          className="w-full cursor-crosshair"
+        />
+        {tooltip && (
+          <div
+            className="pointer-events-none absolute top-1 z-10 rounded-md border border-dark-600/50 bg-dark-800/95 px-2 py-1 text-[11px] text-dark-200 shadow-lg backdrop-blur"
+            style={{ left: Math.min(Math.max(tooltip.x - 50, 0), (containerRef.current?.offsetWidth || 300) - 110) }}
+          >
+            {tooltip.text}
+          </div>
+        )}
+      </div>
+      {/* Summary row */}
+      <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-dark-500">
+        <span>σ = {(ci.std * 100).toFixed(1)}%</span>
+        <span>P10 = {(ci.p10 * 100).toFixed(0)}%</span>
+        <span>P90 = {(ci.p90 * 100).toFixed(0)}%</span>
+        <span>n = {ci.n.toLocaleString()}</span>
+      </div>
+    </div>
+  )
+}
+
 function AiScreeningCard() {
   const [stats, setStats] = useState<DanbooruCandidatesStats | null>(null)
   const [loading, setLoading] = useState(true)
@@ -842,11 +1406,15 @@ function AiScreeningCard() {
   const [prefetchLoading, setPrefetchLoading] = useState(false)
   const [prefetchMsg, setPrefetchMsg] = useState<string | null>(null)
   const [clearing, setClearing] = useState(false)
+  const [prefetchMode, setPrefetchMode] = useState<PrefetchMode>('tag+vision')
+  const [prefetchThreshold, setPrefetchThreshold] = useState(55)  // 0-100, default 55%
+  const [rescoreRunning, setRescoreRunning] = useState(false)
 
   useEffect(() => {
     Promise.all([
       fetchDanbooruCandidatesStats().then(setStats).catch(() => {}),
       fetchPrefetchStatus().then(s => setPrefetchRunning(s.running)).catch(() => {}),
+      fetchRescoreStatus().then(s => setRescoreRunning(s.running)).catch(() => {}),
     ]).finally(() => setLoading(false))
   }, [])
 
@@ -860,6 +1428,21 @@ function AiScreeningCard() {
     return () => clearInterval(id)
   }, [prefetchRunning])
 
+  // Poll rescore status
+  useEffect(() => {
+    if (!rescoreRunning) return
+    const id = setInterval(async () => {
+      try {
+        const s = await fetchRescoreStatus()
+        if (!s.running) {
+          setRescoreRunning(false)
+          fetchDanbooruCandidatesStats().then(setStats).catch(() => {})
+        }
+      } catch { /* ignore */ }
+    }, 3000)
+    return () => clearInterval(id)
+  }, [rescoreRunning])
+
   const handleToggle = async () => {
     setPrefetchLoading(true)
     setPrefetchMsg(null)
@@ -868,7 +1451,13 @@ function AiScreeningCard() {
         const res = await stopPrefetch()
         setPrefetchRunning(res.running)
       } else {
-        const res = await startPrefetch()
+        // Fetch active vision model to pass to prefetch
+        let activeModel: string | undefined
+        try {
+          const models = await fetchVisionModels()
+          activeModel = models.active_model || undefined
+        } catch { /* fallback to server default */ }
+        const res = await startPrefetch(prefetchMode, prefetchThreshold / 100, activeModel)
         setPrefetchRunning(res.running)
         if (!res.running && res.message) {
           setPrefetchMsg(res.message)
@@ -896,30 +1485,70 @@ function AiScreeningCard() {
           <div className="flex items-center gap-2 text-sm text-dark-300">
             <span>🤖</span> AI 预筛选
           </div>
-          <button
-            onClick={handleToggle}
-            disabled={prefetchLoading}
-            className={`
-              flex items-center gap-2 rounded-full px-3.5 py-1.5 text-xs font-medium
-              transition-all duration-200 disabled:opacity-50
-              ${prefetchRunning
-                ? 'border border-red-500/30 bg-red-500/10 text-red-300 hover:bg-red-500/20'
-                : 'border border-purple-500/30 bg-purple-500/10 text-purple-300 hover:bg-purple-500/20'
-              }
-            `}
-          >
-            {prefetchLoading ? (
-              <span className="h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
-            ) : prefetchRunning ? (
-              <span className="relative flex h-2 w-2">
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-75" />
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-red-400" />
-              </span>
-            ) : (
-              <span className="h-2 w-2 rounded-full bg-purple-400" />
+          <div className="flex items-center gap-2">
+            {!prefetchRunning && (
+              <div className="flex rounded-full border border-dark-600/50 bg-dark-800/50 text-[11px]">
+                <button
+                  onClick={() => setPrefetchMode('tag+vision')}
+                  className={`rounded-l-full px-2.5 py-1 transition-all ${
+                    prefetchMode === 'tag+vision'
+                      ? 'bg-purple-500/20 text-purple-300'
+                      : 'text-dark-500 hover:text-dark-300'
+                  }`}
+                >Tag+Vision</button>
+                <button
+                  onClick={() => setPrefetchMode('vision-only')}
+                  className={`rounded-r-full px-2.5 py-1 transition-all ${
+                    prefetchMode === 'vision-only'
+                      ? 'bg-blue-500/20 text-blue-300'
+                      : 'text-dark-500 hover:text-dark-300'
+                  }`}
+                >Vision Only</button>
+              </div>
             )}
-            {prefetchRunning ? '停止预筛选' : '开始预筛选'}
-          </button>
+            {!prefetchRunning && (
+              <div className="flex items-center gap-1.5 rounded-full border border-dark-600/50 bg-dark-800/50 px-2 py-0.5">
+                <span className="text-[10px] text-dark-500">阈值</span>
+                <input
+                  type="number"
+                  min={0} max={100} step={5}
+                  value={prefetchThreshold}
+                  onChange={e => setPrefetchThreshold(Math.max(0, Math.min(100, Number(e.target.value))))}
+                  className="w-10 bg-transparent text-center text-[11px] text-purple-300 outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                />
+                <span className="text-[10px] text-dark-500">%</span>
+              </div>
+            )}
+            {prefetchRunning && (
+              <span className="rounded border border-dark-600/40 bg-dark-800/40 px-2 py-0.5 text-[10px] text-dark-400">
+                {prefetchMode === 'vision-only' ? '🔭 Vision Only' : '🏷 Tag+Vision'}
+              </span>
+            )}
+            <button
+              onClick={handleToggle}
+              disabled={prefetchLoading}
+              className={`
+                flex items-center gap-2 rounded-full px-3.5 py-1.5 text-xs font-medium
+                transition-all duration-200 disabled:opacity-50
+                ${prefetchRunning
+                  ? 'border border-red-500/30 bg-red-500/10 text-red-300 hover:bg-red-500/20'
+                  : 'border border-purple-500/30 bg-purple-500/10 text-purple-300 hover:bg-purple-500/20'
+                }
+              `}
+            >
+              {prefetchLoading ? (
+                <span className="h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
+              ) : prefetchRunning ? (
+                <span className="relative flex h-2 w-2">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-75" />
+                  <span className="relative inline-flex h-2 w-2 rounded-full bg-red-400" />
+                </span>
+              ) : (
+                <span className="h-2 w-2 rounded-full bg-purple-400" />
+              )}
+              {prefetchRunning ? '停止预筛选' : '开始预筛选'}
+            </button>
+          </div>
         </div>
         <p className="text-xs text-dark-500">
           {prefetchRunning ? '预筛选正在运行中，候选图片即将出现…' : '尚未运行预筛选，或候选列表为空。'}
@@ -927,6 +1556,7 @@ function AiScreeningCard() {
         {prefetchMsg && (
           <div className="mt-2 text-xs text-amber-400/80">{prefetchMsg}</div>
         )}
+        <GpuSettingsPanel prefetchRunning={prefetchRunning} />
       </div>
     )
   }
@@ -954,9 +1584,67 @@ function AiScreeningCard() {
           <span>🤖</span> AI 预筛选进度
         </div>
         <div className="flex items-center gap-3">
+          {stats.vision_models && Object.keys(stats.vision_models).length > 0 && (
+            <select
+              className="rounded-lg border border-dark-600/50 bg-dark-800/50 px-2 py-1 text-[11px] text-dark-200 focus:border-purple-500 focus:outline-none"
+              value={stats.active_model || ''}
+              onChange={async (e) => {
+                try {
+                  await setActiveModel(e.target.value)
+                  const updated = await fetchDanbooruCandidatesStats()
+                  setStats(updated)
+                } catch { /* ignore */ }
+              }}
+            >
+              {Object.entries(stats.vision_models).map(([key, info]) => (
+                <option key={key} value={key}>
+                  {key} — {info.model_class} (AUC: {info.cv_auc ? (info.cv_auc * 100).toFixed(1) : 'N/A'}%)
+                </option>
+              ))}
+            </select>
+          )}
           {stats.model_loaded && (
             <span className="rounded border border-purple-500/30 bg-purple-500/10 px-2 py-0.5 text-xs text-purple-300">
-              AUC {(stats.model_auc * 100).toFixed(1)}% · {stats.model_samples.toLocaleString()} 样本
+              XGB AUC {(stats.model_auc * 100).toFixed(1)}%
+            </span>
+          )}
+          {/* Mode selector */}
+          {!prefetchRunning && (
+            <div className="flex rounded-full border border-dark-600/50 bg-dark-800/50 text-[11px]">
+              <button
+                onClick={() => setPrefetchMode('tag+vision')}
+                className={`rounded-l-full px-2.5 py-1 transition-all ${
+                  prefetchMode === 'tag+vision'
+                    ? 'bg-purple-500/20 text-purple-300'
+                    : 'text-dark-500 hover:text-dark-300'
+                }`}
+              >Tag+Vision</button>
+              <button
+                onClick={() => setPrefetchMode('vision-only')}
+                className={`rounded-r-full px-2.5 py-1 transition-all ${
+                  prefetchMode === 'vision-only'
+                    ? 'bg-blue-500/20 text-blue-300'
+                    : 'text-dark-500 hover:text-dark-300'
+                }`}
+              >Vision Only</button>
+            </div>
+          )}
+          {!prefetchRunning && (
+            <div className="flex items-center gap-1.5 rounded-full border border-dark-600/50 bg-dark-800/50 px-2 py-0.5">
+              <span className="text-[10px] text-dark-500">阈值</span>
+              <input
+                type="number"
+                min={0} max={100} step={5}
+                value={prefetchThreshold}
+                onChange={e => setPrefetchThreshold(Math.max(0, Math.min(100, Number(e.target.value))))}
+                className="w-10 bg-transparent text-center text-[11px] text-purple-300 outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+              />
+              <span className="text-[10px] text-dark-500">%</span>
+            </div>
+          )}
+          {prefetchRunning && (
+            <span className="rounded border border-dark-600/40 bg-dark-800/40 px-2 py-0.5 text-[10px] text-dark-400">
+              {prefetchMode === 'vision-only' ? '🔭 Vision Only' : '🏷 Tag+Vision'}
             </span>
           )}
           <button
@@ -1004,11 +1692,35 @@ function AiScreeningCard() {
             )}
             清空
           </button>
+          <button
+            onClick={async () => {
+              try {
+                const res = await startCandidatesRescore()
+                if (res.status === 'started' || res.status === 'already_running') {
+                  setRescoreRunning(true)
+                }
+              } catch { /* ignore */ }
+            }}
+            disabled={rescoreRunning || prefetchRunning}
+            className="flex items-center gap-1.5 rounded-full border border-blue-500/30 bg-blue-500/10 px-3 py-1.5 text-xs text-blue-300 transition-all hover:bg-blue-500/20 disabled:opacity-40"
+            title="用当前模型重新评分所有候选"
+          >
+            {rescoreRunning ? (
+              <>
+                <span className="h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                重评中...
+              </>
+            ) : (
+              <>🧠 重新评分</>
+            )}
+          </button>
         </div>
       </div>
       {prefetchMsg && (
         <div className="mb-3 text-xs text-amber-400/80">{prefetchMsg}</div>
       )}
+
+      <GpuSettingsPanel prefetchRunning={prefetchRunning} />
 
       {/* Quick stats */}
       <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -1054,6 +1766,11 @@ function AiScreeningCard() {
             ))}
           </div>
         </div>
+      )}
+
+      {/* Score histogram with confidence interval */}
+      {stats.histogram && stats.histogram.length > 0 && stats.ci_stats && (
+        <ScoreHistogram histogram={stats.histogram} ci={stats.ci_stats} />
       )}
 
       {/* Rating distribution */}
@@ -1293,14 +2010,40 @@ function StatsMode() {
       )}
 
       {/* Export */}
-      {stats.liked > 0 && (
-        <div className="flex justify-center">
-          <a
-            href={getDanbooruExportUrl('liked')}
-            className="rounded-2xl bg-emerald-600 px-6 py-3 text-sm font-medium text-white transition-colors hover:bg-emerald-500"
-          >
-            📦 导出全部喜欢的图片 ({stats.liked} 张)
-          </a>
+      {(stats.liked > 0 || stats.disliked > 0) && (
+        <div className="flex justify-center gap-3 flex-wrap">
+          {stats.liked > 0 && (
+            <a
+              href={getDanbooruExportUrl('liked')}
+              className="rounded-2xl bg-emerald-600 px-6 py-3 text-sm font-medium text-white transition-colors hover:bg-emerald-500"
+            >
+              📦 导出喜欢 ({stats.liked} 张)
+            </a>
+          )}
+          {stats.liked > 0 && (
+            <a
+              href={getDanbooruExportUrl('liked', undefined, 0)}
+              className="rounded-2xl bg-blue-600 px-6 py-3 text-sm font-medium text-white transition-colors hover:bg-blue-500"
+            >
+              🖼️ 喜欢原图
+            </a>
+          )}
+          {stats.disliked > 0 && (
+            <a
+              href={getDanbooruExportUrl('disliked')}
+              className="rounded-2xl bg-red-600/80 px-6 py-3 text-sm font-medium text-white transition-colors hover:bg-red-500"
+            >
+              📦 导出不喜欢 ({stats.disliked} 张)
+            </a>
+          )}
+          {stats.disliked > 0 && (
+            <a
+              href={getDanbooruExportUrl('disliked', undefined, 0)}
+              className="rounded-2xl bg-orange-600/80 px-6 py-3 text-sm font-medium text-white transition-colors hover:bg-orange-500"
+            >
+              🖼️ 不喜欢原图
+            </a>
+          )}
         </div>
       )}
     </div>

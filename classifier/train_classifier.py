@@ -35,6 +35,10 @@ TWITTER_DIR = os.environ.get("TWITTER_DIR", "")
 TWITTER_TAGS_DB = os.environ.get("TWITTER_TAGS_DB", "")
 MODEL_OUT = _resolve("PREFERENCE_MODEL_PATH", "classifier/model.joblib")
 REPORT_OUT = _resolve("REPORT_OUT", "classifier/report.txt")
+TRAINING_CACHE_DB = os.environ.get(
+    "TRAINING_CACHE_DB",
+    str(Path(__file__).parent / "training_cache.db"),
+)
 
 def load_booru_data():
     """Load labels + auto_tags from the labeling database."""
@@ -80,6 +84,36 @@ def load_twitter_tags():
         # All Twitter liked images are positive samples
         data.append((general, rating, 1, f"twitter_{filename}"))
     
+    return data
+
+
+def load_training_cache():
+    """Load training data from the unified training cache DB.
+
+    The cache contains danbooru labels (and future WD14 results) synced by
+    classifier/training_cache.py.  We deduplicate against booru labels.db
+    by image_id to avoid double-counting images that appear in both.
+    """
+    cache_path = Path(TRAINING_CACHE_DB)
+    if not cache_path.exists():
+        print(f"  Training cache not found at {cache_path}")
+        print("  Run: python classifier/training_cache.py")
+        return []
+
+    conn = sqlite3.connect(str(cache_path))
+    rows = conn.execute(
+        "SELECT source, image_id, verdict, general_json, rating_json "
+        "FROM training_tags WHERE verdict IN ('liked', 'disliked')"
+    ).fetchall()
+    conn.close()
+
+    data = []
+    for source, image_id, verdict, general_json, rating_json in rows:
+        general = json.loads(general_json)
+        rating = json.loads(rating_json)
+        label = 1 if verdict == "liked" else 0
+        data.append((general, rating, label, f"{source}_{image_id}"))
+
     return data
 
 # ============================================================
@@ -228,8 +262,18 @@ if __name__ == '__main__':
     print("\nLoading Twitter data...")
     twitter_data = load_twitter_tags()
     print(f"  Twitter: {len(twitter_data)} samples (all liked)")
-    
-    all_data = booru_data + twitter_data
+
+    print("\nLoading training cache (danbooru etc.)...")
+    cache_data = load_training_cache()
+    # Deduplicate: booru labels.db image_ids take priority (they have WD14 tags)
+    booru_ids = {name for _, _, _, name in booru_data}
+    cache_before = len(cache_data)
+    cache_data = [d for d in cache_data if d[3] not in booru_ids]
+    if cache_before != len(cache_data):
+        print(f"  Deduped {cache_before - len(cache_data)} entries already in booru data")
+    print(f"  Cache: {len(cache_data)} samples ({sum(1 for _,_,l,_ in cache_data if l==1)} liked, {sum(1 for _,_,l,_ in cache_data if l==0)} disliked)")
+
+    all_data = booru_data + twitter_data + cache_data
     print(f"\nTotal: {len(all_data)} samples")
     
     print("\nBuilding features...")
