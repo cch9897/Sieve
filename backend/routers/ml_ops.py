@@ -195,13 +195,17 @@ async def prefetch_start(
                 "MKL_NUM_THREADS": "6",
                 "TORCH_NUM_THREADS": "6",
                 "OPENBLAS_NUM_THREADS": "6",
-                "https_proxy": "socks5://192.168.50.10:7891",
-                "http_proxy": "socks5://192.168.50.10:7891",
-                "HTTPS_PROXY": "socks5://192.168.50.10:7891",
-                "HTTP_PROXY": "socks5://192.168.50.10:7891",
-                "no_proxy": "localhost,127.0.0.1,192.168.50.0/24",
-                "NO_PROXY": "localhost,127.0.0.1,192.168.50.0/24",
             })
+            _proxy = os.environ.get("PREFETCH_PROXY", "")
+            if _proxy:
+                _prefetch_env.update({
+                    "https_proxy": _proxy,
+                    "http_proxy": _proxy,
+                    "HTTPS_PROXY": _proxy,
+                    "HTTP_PROXY": _proxy,
+                    "no_proxy": os.environ.get("PREFETCH_NO_PROXY", "localhost,127.0.0.1"),
+                    "NO_PROXY": os.environ.get("PREFETCH_NO_PROXY", "localhost,127.0.0.1"),
+                })
             # Pass GPU/inference config as env vars
             gpu_cfg = _load_gpu_config()
             inf_mode = gpu_cfg.get("inference_mode", "cpu")
@@ -271,8 +275,17 @@ async def prefetch_stop():
             killed = True
         # Also kill any externally-started prefetch
         try:
-            subprocess.run(["pkill", "-f", "prefetch_candidates.py"], timeout=5)
-            killed = True
+            result = subprocess.run(
+                ["pgrep", "-f", "prefetch_candidates.py"], capture_output=True, text=True, timeout=5
+            )
+            for pid_str in result.stdout.strip().split('\n'):
+                pid_str = pid_str.strip()
+                if pid_str:
+                    try:
+                        os.kill(int(pid_str), signal.SIGTERM)
+                        killed = True
+                    except (ProcessLookupError, ValueError):
+                        pass
         except Exception:
             pass
         return {"running": False, "stopped": killed}

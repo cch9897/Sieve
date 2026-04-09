@@ -75,16 +75,18 @@ export default function Lightbox({ image, images, onClose, onNavigate }: Lightbo
 
   useEffect(() => {
     if (!image) { setAutoTags(null); setMultiScores(null); return }
+    let stale = false
     setTagsLoading(true)
     setAutoTags(null)
     setMultiScores(null)
     fetchAutoTags(image.id)
-      .then(t => setAutoTags(t))
-      .catch(() => setAutoTags(null))
-      .finally(() => setTagsLoading(false))
+      .then(t => { if (!stale) setAutoTags(t) })
+      .catch(() => { if (!stale) setAutoTags(null) })
+      .finally(() => { if (!stale) setTagsLoading(false) })
     fetchVisionScoreCompare(image.id)
-      .then(s => setMultiScores(s))
-      .catch(() => setMultiScores(null))
+      .then(s => { if (!stale) setMultiScores(s) })
+      .catch(() => { if (!stale) setMultiScores(null) })
+    return () => { stale = true }
   }, [image?.id])
 
   const touchStart = useRef<{ x: number; y: number } | null>(null)

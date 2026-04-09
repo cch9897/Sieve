@@ -8,6 +8,9 @@ from database import get_db, get_labels_db_async
 from utils import _fetch_all_vision_scores
 
 VIDEO_EXTS = state.VIDEO_EXTS
+_video_exclude_sql, _video_exclude_params = state.video_filter_sql()
+_video_include_parts = " OR ".join("file_path LIKE ?" for _ in sorted(VIDEO_EXTS))
+_video_include_params = [f"%{ext}" for ext in sorted(VIDEO_EXTS)]
 
 router = APIRouter()
 
@@ -34,9 +37,11 @@ async def list_images(
         params.append(f"downloads/{date}/%")
 
     if media == "video":
-        conditions.append("(file_path LIKE '%.mp4' OR file_path LIKE '%.webm')")
+        conditions.append(f"({_video_include_parts})")
+        params.extend(_video_include_params)
     elif media == "image":
-        conditions.append("file_path NOT LIKE '%.mp4' AND file_path NOT LIKE '%.webm'")
+        conditions.append(_video_exclude_sql)
+        params.extend(_video_exclude_params)
 
     where = " AND ".join(conditions)
     order = "created_at DESC" if sort == "newest" else "created_at ASC"

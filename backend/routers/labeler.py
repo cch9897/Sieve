@@ -16,6 +16,9 @@ from database import get_db, get_labels_db_async
 from utils import _fetch_all_vision_scores
 
 VIDEO_EXTS = state.VIDEO_EXTS
+_video_exclude_sql, _video_exclude_params = state.video_filter_sql()
+_video_include_parts = " OR ".join("file_path LIKE ?" for _ in sorted(VIDEO_EXTS))
+_video_include_params = [f"%{ext}" for ext in sorted(VIDEO_EXTS)]
 
 router = APIRouter()
 
@@ -44,14 +47,18 @@ async def labeler_next(
         conditions.append("source = ?")
         params.append(source)
     if media == "video":
-        conditions.append("(file_path LIKE '%.mp4' OR file_path LIKE '%.webm')")
+        conditions.append(f"({_video_include_parts})")
+        params.extend(_video_include_params)
     elif media == "image":
-        conditions.append("file_path NOT LIKE '%.mp4' AND file_path NOT LIKE '%.webm'")
+        conditions.append(_video_exclude_sql)
+        params.extend(_video_exclude_params)
 
     if labeled_ids:
-        placeholders = ",".join("?" * len(labeled_ids))
-        conditions.append(f"id NOT IN ({placeholders})")
-        params.extend(labeled_ids)
+        for i in range(0, len(labeled_ids), 900):
+            batch = list(labeled_ids)[i:i+900]
+            placeholders = ",".join("?" * len(batch))
+            conditions.append(f"id NOT IN ({placeholders})")
+            params.extend(batch)
 
     where = " AND ".join(conditions)
 
@@ -357,7 +364,7 @@ async def export_liked(
     import tempfile
 
     from PIL import Image as PILImage
-    PILImage.MAX_IMAGE_PIXELS = None  # allow large images for resize
+    PILImage.MAX_IMAGE_PIXELS = 100_000_000
 
     db = await get_db()
     ldb = await get_labels_db_async()
@@ -411,7 +418,7 @@ async def export_liked(
     def _build_zip_sync() -> tuple[str, str]:
         """Build entire ZIP in a worker thread. Returns (tmp_path, filename)."""
         from PIL import Image as _PIL
-        _PIL.MAX_IMAGE_PIXELS = None
+        _PIL.MAX_IMAGE_PIXELS = 100_000_000
 
         tmp_fd = tempfile.NamedTemporaryFile(delete=False, suffix=".zip", dir="/tmp")
         tmp_path = tmp_fd.name
@@ -465,7 +472,7 @@ async def export_liked(
         dl_name = f"booru_{verdict}{tag_suffix}_{len(meta)}imgs.zip"
         return tmp_path, dl_name
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     try:
         tmp_path, dl_filename = await loop.run_in_executor(None, _build_zip_sync)
     except Exception:

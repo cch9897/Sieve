@@ -74,7 +74,7 @@ def init_vision_scores_table(conn: sqlite3.Connection):
             """)
             conn.execute("""
                 INSERT INTO vision_scores (image_id, model_name, score, scored_at)
-                SELECT image_id, model_name, score, scored_at FROM vision_scores_old
+                SELECT image_id, 'default', score, scored_at FROM vision_scores_old
             """)
             conn.execute("DROP TABLE vision_scores_old")
             print("[db] Migration complete.", flush=True)
@@ -152,8 +152,12 @@ def load_eva02_model(path: Path | None = None):
                     tnn.Linear(256, 1),
                 )
             def forward(self, x):
-                features = self.backbone(x)
-                return self.head(features).squeeze(-1)
+                feats = self.backbone(x)
+                if feats.ndim == 4:
+                    feats = feats.mean(dim=(2, 3))
+                elif feats.ndim == 3:
+                    feats = feats.mean(dim=1)
+                return self.head(feats).squeeze(-1)
 
         backbone = timm.create_model(model_name, pretrained=False, num_classes=0)
         num_features = backbone.num_features
@@ -166,10 +170,13 @@ def load_eva02_model(path: Path | None = None):
     model.to(device)
     model.eval()
 
+    mean = checkpoint.get('normalize_mean', [0.485, 0.456, 0.406])
+    std = checkpoint.get('normalize_std', [0.229, 0.224, 0.225])
     transform = T.Compose([
-        T.Resize((input_size, input_size)),
+        T.Resize(int(input_size * 1.14), interpolation=T.InterpolationMode.BICUBIC),
+        T.CenterCrop(input_size),
         T.ToTensor(),
-        T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        T.Normalize(mean=mean, std=std),
     ])
 
     print(f"Loaded EVA02: {model_name} ({model_class}), input={input_size}, device={device}", flush=True)

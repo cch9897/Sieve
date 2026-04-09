@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+import state
 from config import CANDIDATES_DB_PATH, DANBOORU_LIKES_DIR
 from database import get_danbooru_client, get_danbooru_labels_db
 
@@ -116,9 +117,13 @@ async def danbooru_label_image(image_id: int, req: DanbooruLabelRequest):
 
     # Auto-download liked images / remove if verdict changed away from liked
     if req.verdict == "liked" and req.ext:
-        asyncio.create_task(_download_danbooru_liked(image_id, req.ext))
+        _task = asyncio.create_task(_download_danbooru_liked(image_id, req.ext))
+        state._background_tasks.add(_task)
+        _task.add_done_callback(state._background_tasks.discard)
     else:
-        asyncio.create_task(_remove_danbooru_liked(image_id))
+        _task = asyncio.create_task(_remove_danbooru_liked(image_id))
+        state._background_tasks.add(_task)
+        _task.add_done_callback(state._background_tasks.discard)
 
     return {"ok": True}
 
@@ -131,9 +136,13 @@ async def _download_danbooru_liked(image_id: int, ext: str):
         if dest.exists():
             return
         client = get_danbooru_client()
-        resp = await client.get(f"/preview/{image_id}.{ext}")
+        resp = await client.get(f"/original/{image_id}.{ext}", follow_redirects=True, timeout=60.0)
         if resp.status_code == 200:
             dest.write_bytes(resp.content)
+        elif resp.status_code == 404:
+            resp2 = await client.get(f"/preview/{image_id}.{ext}", timeout=30.0)
+            if resp2.status_code == 200:
+                dest.write_bytes(resp2.content)
     except Exception as e:
         print(f"[danbooru_likes] Failed to download {image_id}.{ext}: {e}")
 
@@ -154,7 +163,9 @@ async def danbooru_unlabel_image(image_id: int):
     """Remove label for a danbooru image (undo)."""
     dldb = await get_danbooru_labels_db()
     # Remove local file if it was liked
-    asyncio.create_task(_remove_danbooru_liked(image_id))
+    _task = asyncio.create_task(_remove_danbooru_liked(image_id))
+    state._background_tasks.add(_task)
+    _task.add_done_callback(state._background_tasks.discard)
     await dldb.execute("DELETE FROM labels WHERE image_id = ?", [image_id])
     await dldb.execute("DELETE FROM tags WHERE image_id = ?", [image_id])
     await dldb.commit()
@@ -424,7 +435,7 @@ async def danbooru_export_liked(
 
     def _build_zip_sync() -> tuple[str, str, int, int]:
         from PIL import Image as _PIL
-        _PIL.MAX_IMAGE_PIXELS = None
+        _PIL.MAX_IMAGE_PIXELS = 100_000_000
 
         tmp_fd = tempfile.NamedTemporaryFile(delete=False, suffix=".zip", dir="/tmp")
         tmp_path = tmp_fd.name

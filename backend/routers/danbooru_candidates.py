@@ -25,7 +25,7 @@ async def danbooru_candidates_next(
     async with dldb.execute("SELECT image_id FROM labels") as c:
         labeled_ids = {r[0] for r in await c.fetchall()}
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     # Convert labeled_ids to a frozenset for the closure
     _labeled_ids = frozenset(labeled_ids)
@@ -54,9 +54,11 @@ async def danbooru_candidates_next(
 
         # Exclude already-labeled ids
         if _labeled_ids:
-            placeholders = ",".join("?" * len(_labeled_ids))
-            where.append(f"image_id NOT IN ({placeholders})")
-            params_list.extend(_labeled_ids)
+            for i in range(0, len(_labeled_ids), 900):
+                batch = list(_labeled_ids)[i:i+900]
+                placeholders = ",".join("?" * len(batch))
+                where.append(f"image_id NOT IN ({placeholders})")
+                params_list.extend(batch)
 
         where_str = " AND ".join(where)
         cur.execute(f"SELECT image_id, ext, score, rating, tags, preference_score, tag_score, cnn_score FROM candidates WHERE {where_str} ORDER BY preference_score DESC LIMIT 1", params_list)
@@ -109,7 +111,7 @@ async def danbooru_candidates_mark(image_id: int):
     """Mark a candidate as labeled after the user reviews it."""
     if not CANDIDATES_DB_PATH.exists():
         return {"ok": True}
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     def _mark():
         conn = sqlite3.connect(str(CANDIDATES_DB_PATH), timeout=30)
         conn.execute("PRAGMA journal_mode=WAL")
@@ -126,7 +128,7 @@ async def danbooru_candidates_clear():
     """Clear all AI pre-screening candidates and reset scan position."""
     if not CANDIDATES_DB_PATH.exists():
         return {"ok": True, "deleted": 0}
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     def _clear():
         conn = sqlite3.connect(str(CANDIDATES_DB_PATH), timeout=30)
         conn.execute("PRAGMA journal_mode=WAL")

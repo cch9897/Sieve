@@ -7,6 +7,7 @@ import state
 from database import get_db, get_labels_db_async
 
 VIDEO_EXTS = state.VIDEO_EXTS
+_video_exclude_sql, _video_exclude_params = state.video_filter_sql()
 
 router = APIRouter()
 
@@ -24,7 +25,8 @@ async def auto_tags_stats():
         errored = (await c.fetchone())[0]
 
     async with db.execute(
-        "SELECT COUNT(*) FROM images WHERE file_path IS NOT NULL AND file_path NOT LIKE '%.mp4' AND file_path NOT LIKE '%.webm' AND file_path NOT LIKE '%.mkv'"
+        f"SELECT COUNT(*) FROM images WHERE file_path IS NOT NULL AND {_video_exclude_sql}",
+        _video_exclude_params,
     ) as c:
         total_raw = (await c.fetchone())[0]
 

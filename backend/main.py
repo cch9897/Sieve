@@ -49,6 +49,8 @@ _safe_under_crawler = state._safe_under_crawler
 async def lifespan(app: FastAPI):
     if not DB_PATH.exists():
         raise RuntimeError(f"Database not found: {DB_PATH}")
+    if not CRAWLER_DIR.exists():
+        raise RuntimeError(f"CRAWLER_DIR does not exist: {CRAWLER_DIR}")
     THUMBS_DIR.mkdir(parents=True, exist_ok=True)
     _init_labels_db()
     _init_auto_tags_table()
@@ -89,7 +91,10 @@ async def lifespan(app: FastAPI):
             import torch
             # Load only metadata (keys), not full tensors — use weights_only=False but
             # we only read scalar metadata then discard the checkpoint immediately.
-            checkpoint = torch.load(pt_path, map_location="cpu", weights_only=False)
+            try:
+                checkpoint = torch.load(pt_path, map_location="cpu", weights_only=True)
+            except Exception:
+                checkpoint = torch.load(pt_path, map_location="cpu", weights_only=False)
             model_class = checkpoint.get('model_class', 'timm')
             model_name = checkpoint.get('model_name', pt_name)
 

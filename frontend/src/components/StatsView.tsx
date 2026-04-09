@@ -32,7 +32,7 @@ export default function StatsView() {
 
   useEffect(() => {
     Promise.all([
-      fetchStats().then(s => setStats(s)),
+      fetchStats().then(s => setStats(s)).catch(() => {}),
       fetchAutoTagsStats().then(s => setAutoTagsStats(s)).catch(() => {}),
       fetchMLModels().then(m => setMlModels(m)).catch(() => {}),
       fetchVisionModels().then(m => setVisionModels(m)).catch(() => {}),

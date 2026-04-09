@@ -2,6 +2,7 @@
 
 import json
 import mimetypes
+import threading
 import time
 from pathlib import Path
 
@@ -10,6 +11,8 @@ from fastapi.responses import FileResponse, StreamingResponse
 
 import state
 from config import CRAWLER_DIR
+
+_novel_cache_lock = threading.Lock()
 
 
 async def _fetch_all_vision_scores(ldb, image_ids: list[int]) -> dict[int, dict[str, float]]:
@@ -34,13 +37,21 @@ def _range_file_response(file_path: Path, request: Request) -> StreamingResponse
     file_size = file_path.stat().st_size
 
     range_header = request.headers.get("range")
+    fallback_headers = {"Cache-Control": "public, max-age=86400, immutable"}
+    if ext in state.VIDEO_EXTS:
+        fallback_headers["Accept-Ranges"] = "bytes"
     if range_header and ext in state.VIDEO_EXTS:
         range_spec = range_header.strip().lower()
         if range_spec.startswith("bytes="):
             range_spec = range_spec[6:]
-        parts = range_spec.split("-", 1)
-        start = int(parts[0]) if parts[0] else 0
-        end = int(parts[1]) if parts[1] else file_size - 1
+        try:
+            parts = range_spec.split("-", 1)
+            start = int(parts[0]) if parts[0] else 0
+            end = int(parts[1]) if parts[1] else file_size - 1
+        except (ValueError, IndexError):
+            return FileResponse(file_path, headers=fallback_headers)
+        if start < 0 or start >= file_size or end < start:
+            return FileResponse(file_path, headers=fallback_headers)
         end = min(end, file_size - 1)
         length = end - start + 1
 
@@ -68,9 +79,7 @@ def _range_file_response(file_path: Path, request: Request) -> StreamingResponse
             },
         )
 
-    headers = {"Cache-Control": "public, max-age=86400, immutable"}
-    if ext in state.VIDEO_EXTS:
-        headers["Accept-Ranges"] = "bytes"
+    headers = fallback_headers
     return FileResponse(file_path, headers=headers)
 
 
@@ -82,10 +91,11 @@ def _read_novel_meta(file_path: str, include_text: bool = False) -> dict:
     cache_key = file_path
     now = time.monotonic()
 
-    if not include_text and cache_key in state._novel_meta_cache:
-        ts, cached = state._novel_meta_cache[cache_key]
-        if now - ts < state._NOVEL_CACHE_TTL:
-            return cached
+    with _novel_cache_lock:
+        if not include_text and cache_key in state._novel_meta_cache:
+            ts, cached = state._novel_meta_cache[cache_key]
+            if now - ts < state._NOVEL_CACHE_TTL:
+                return cached
 
     full_path = CRAWLER_DIR / file_path
     if not full_path.exists():
@@ -110,10 +120,11 @@ def _read_novel_meta(file_path: str, include_text: bool = False) -> dict:
         if include_text:
             result["text"] = data.get("text", "")
         else:
-            if len(state._novel_meta_cache) >= state._NOVEL_CACHE_MAX:
-                oldest_key = min(state._novel_meta_cache, key=lambda k: state._novel_meta_cache[k][0])
-                del state._novel_meta_cache[oldest_key]
-            state._novel_meta_cache[cache_key] = (now, result)
+            with _novel_cache_lock:
+                if len(state._novel_meta_cache) >= state._NOVEL_CACHE_MAX:
+                    oldest_key = min(state._novel_meta_cache, key=lambda k: state._novel_meta_cache[k][0])
+                    del state._novel_meta_cache[oldest_key]
+                state._novel_meta_cache[cache_key] = (now, result)
         return result
     except Exception:
         return {}

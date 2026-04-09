@@ -11,7 +11,10 @@ except ImportError:
 PROJECT_ROOT = Path(__file__).parent.parent
 
 # Data sources
-CRAWLER_DIR = Path(os.environ.get("CRAWLER_DIR", ""))
+_raw_crawler_dir = os.environ.get("CRAWLER_DIR", "")
+if not _raw_crawler_dir:
+    raise ValueError("CRAWLER_DIR environment variable must be set to the booru-crawler data directory")
+CRAWLER_DIR = Path(_raw_crawler_dir)
 if not CRAWLER_DIR.is_absolute():
     CRAWLER_DIR = PROJECT_ROOT / CRAWLER_DIR
 DB_PATH = CRAWLER_DIR / "dedup.db"

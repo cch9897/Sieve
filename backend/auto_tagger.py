@@ -25,6 +25,7 @@ os.environ.setdefault("OPENBLAS_NUM_THREADS", "4")
 os.environ.setdefault("MKL_NUM_THREADS", "4")
 os.environ.setdefault("ONNXRUNTIME_NUM_THREADS", "4")
 
+import state as _state
 from config import CRAWLER_DIR, DB_PATH, LABELS_DB_PATH
 
 logging.basicConfig(
@@ -34,7 +35,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("auto_tagger")
 
-IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".avif"}
+IMAGE_EXTS = _state.IMAGE_EXTS
 
 # ---------------------------------------------------------------------------
 # DB helpers
@@ -150,13 +151,11 @@ def get_progress(dedup_db: str, labels_db: str) -> tuple[int, int]:
 
     dconn = sqlite3.connect(f"file:{dedup_db}?mode=ro", uri=True)
     # Count only images (not videos)
-    total = dconn.execute("""
-        SELECT COUNT(*) FROM images
-        WHERE file_path IS NOT NULL
-          AND file_path NOT LIKE '%.mp4'
-          AND file_path NOT LIKE '%.webm'
-          AND file_path NOT LIKE '%.mkv'
-    """).fetchone()[0]
+    _video_exclude_sql, _video_exclude_params = _state.video_filter_sql()
+    total = dconn.execute(
+        f"SELECT COUNT(*) FROM images WHERE file_path IS NOT NULL AND {_video_exclude_sql}",
+        _video_exclude_params,
+    ).fetchone()[0]
     dconn.close()
     return tagged, total
 

@@ -1001,6 +1001,12 @@ function GpuSettingsPanel({ prefetchRunning }: { prefetchRunning: boolean }) {
 
   const currentMode = infStatus?.inference_mode || 'cpu'
 
+  const colorClasses: Record<string, { active: string; dot: string }> = {
+    blue: { active: 'border-blue-500/50 bg-blue-500/10 ring-1 ring-blue-500/20', dot: 'bg-blue-400' },
+    emerald: { active: 'border-emerald-500/50 bg-emerald-500/10 ring-1 ring-emerald-500/20', dot: 'bg-emerald-400' },
+    purple: { active: 'border-purple-500/50 bg-purple-500/10 ring-1 ring-purple-500/20', dot: 'bg-purple-400' },
+  }
+
   const modeOptions: { key: InferenceMode; label: string; icon: string; desc: string; color: string; disabledReason?: string }[] = [
     { key: 'cpu', label: 'CPU', icon: '🖥', desc: '本机 CPU 推理', color: 'blue' },
     {
@@ -1059,7 +1065,7 @@ function GpuSettingsPanel({ prefetchRunning }: { prefetchRunning: boolean }) {
                   className={[
                     'relative rounded-xl border p-3 text-left transition-all',
                     active
-                      ? `border-${opt.color}-500/50 bg-${opt.color}-500/10 ring-1 ring-${opt.color}-500/20`
+                      ? colorClasses[opt.color]?.active || colorClasses.blue.active
                       : 'border-dark-700/50 bg-dark-900/30 hover:border-dark-500/70',
                     disabled && !active ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer',
                   ].join(' ')}
@@ -1072,7 +1078,7 @@ function GpuSettingsPanel({ prefetchRunning }: { prefetchRunning: boolean }) {
                   <div className={`mt-1 text-xs font-medium ${active ? 'text-dark-100' : 'text-dark-300'}`}>{opt.label}</div>
                   <div className="mt-0.5 text-[10px] text-dark-500 truncate">{opt.disabledReason || opt.desc}</div>
                   {active && (
-                    <div className={`absolute right-2 top-2 h-2 w-2 rounded-full bg-${opt.color}-400`} />
+                    <div className={`absolute right-2 top-2 h-2 w-2 rounded-full ${colorClasses[opt.color]?.dot || 'bg-blue-400'}`} />
                   )}
                 </button>
               )

@@ -274,7 +274,8 @@ def _score_image_with_model(image_path: str | Path, model_key: str | None = None
                 logit = info['model'](tensor).squeeze()
                 prob = torch.sigmoid(logit).item()
         return prob
-    except Exception:
+    except Exception as e:
+        print(f"[models] Failed to score {image_path}: {e}")
         return None
 
 

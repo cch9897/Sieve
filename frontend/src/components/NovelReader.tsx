@@ -15,10 +15,10 @@ export default function NovelReader({ novel, onBack }: NovelReaderProps) {
 
   useEffect(() => {
     setLoading(true)
-    fetchNovelDetail(novel.id).then(d => {
-      setDetail(d)
-      setLoading(false)
-    })
+    fetchNovelDetail(novel.id)
+      .then(d => setDetail(d))
+      .catch(() => setDetail(null))
+      .finally(() => setLoading(false))
     window.scrollTo(0, 0)
   }, [novel.id])
 

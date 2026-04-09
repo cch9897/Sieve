@@ -50,16 +50,19 @@ function SkeletonGrid() {
 
 export default function ImageGrid({ images, onImageClick, loading }: ImageGridProps) {
   const [batchTags, setBatchTags] = useState<Record<string, { top_tags: string; rating: string }>>({})
-  const prevIdsRef = useRef('')
+  const fetchedIdsRef = useRef<Set<number>>(new Set())
 
   useEffect(() => {
     if (!images.length) return
-    const ids = images.map(i => i.id)
-    const idsKey = ids.join(',')
-    if (idsKey === prevIdsRef.current) return
-    prevIdsRef.current = idsKey
-    fetchAutoTagsBatch(ids)
-      .then(res => setBatchTags(res.tags || {}))
+    const newIds = images.filter(i => !fetchedIdsRef.current.has(i.id)).map(i => i.id)
+    if (newIds.length === 0) return
+    newIds.forEach(id => fetchedIdsRef.current.add(id))
+    fetchAutoTagsBatch(newIds)
+      .then(res => {
+        if (res.tags) {
+          setBatchTags(prev => ({ ...prev, ...res.tags }))
+        }
+      })
       .catch(() => {})
   }, [images])
 

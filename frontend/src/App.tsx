@@ -129,13 +129,20 @@ export default function App() {
 
   // Scroll persistence for gallery
   useEffect(() => {
+    let rafId = 0
     const onScroll = () => {
       if (view === 'gallery') {
-        persistState({ galleryScrollY: window.scrollY })
+        cancelAnimationFrame(rafId)
+        rafId = requestAnimationFrame(() => {
+          persistState({ galleryScrollY: window.scrollY })
+        })
       }
     }
     window.addEventListener('scroll', onScroll, { passive: true })
-    return () => window.removeEventListener('scroll', onScroll)
+    return () => {
+      window.removeEventListener('scroll', onScroll)
+      cancelAnimationFrame(rafId)
+    }
   }, [view])
 
   useEffect(() => {

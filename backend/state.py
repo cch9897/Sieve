@@ -31,6 +31,20 @@ _loaded_model_key: str | None = None
 VIDEO_EXTS = {".mp4", ".webm", ".mkv", ".avi", ".mov"}
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".avif"}
 
+
+def video_filter_sql(column: str = "file_path") -> tuple[str, list]:
+    """Return (sql_condition, params) for filtering video/image media type.
+
+    Usage:
+        sql, params = video_filter_sql()  # returns exclusion condition for images
+    """
+    conditions = []
+    params: list = []
+    for ext in sorted(VIDEO_EXTS):
+        conditions.append(f"{column} NOT LIKE ?")
+        params.append(f"%{ext}")
+    return " AND ".join(conditions), params
+
 # ---------------------------------------------------------------------------
 # Path constants
 # ---------------------------------------------------------------------------
@@ -108,6 +122,12 @@ _danbooru_labels_pool = None  # aiosqlite.Connection for danbooru_labels.db
 # ---------------------------------------------------------------------------
 
 _danbooru_client = None  # httpx.AsyncClient, set by database.get_danbooru_client()
+
+# ---------------------------------------------------------------------------
+# Background task tracking (prevent GC from dropping fire-and-forget tasks)
+# ---------------------------------------------------------------------------
+
+_background_tasks: set = set()
 
 # ---------------------------------------------------------------------------
 # Novel meta cache
