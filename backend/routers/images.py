@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 import state
 from database import get_db, get_labels_db_async
-from utils import _fetch_all_vision_scores
+from utils import _fetch_all_vision_scores, extract_date_from_path
 
 VIDEO_EXTS = state.VIDEO_EXTS
 _video_exclude_sql, _video_exclude_params = state.video_filter_sql()
@@ -66,7 +66,7 @@ async def list_images(
     for r in rows:
         fp = r["file_path"]
         parts = fp.split("/")
-        img_date = parts[1] if len(parts) >= 2 else None
+        img_date = extract_date_from_path(fp)
         subfolder = parts[2] if len(parts) >= 3 else None
         ext = Path(fp).suffix.lower()
         is_video = ext in VIDEO_EXTS

@@ -12,6 +12,8 @@ import numpy as np
 from collections import Counter
 from pathlib import Path
 
+from feature_utils import N_META_FEATURES
+
 # ============================================================
 # Step 1: Collect training data
 # ============================================================
@@ -226,7 +228,7 @@ def train_and_evaluate(X, y, names, feature_names):
     model_data = {
         'model': clf,
         'feature_names': feature_names,
-        'tag_vocab': feature_names[:X.shape[1] - 6],  # exclude rating + meta
+        'tag_vocab': feature_names[:X.shape[1] - N_META_FEATURES],  # exclude rating + meta
         'model_type': model_type,
         'n_samples': len(y),
         'n_liked': int(sum(y == 1)),

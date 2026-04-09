@@ -40,7 +40,6 @@ def _load_model_weights(key: str):
         _unload_model(state._loaded_model_key)
 
     import torch
-    import torch.nn as tnn
 
     pt_path = info['_pt_path']
     _init_device = "cpu"
@@ -49,35 +48,10 @@ def _load_model_weights(key: str):
     model_name = info['model_name']
 
     if model_class == 'NaFlexClassifier':
+        import sys
+        sys.path.insert(0, str(Path(__file__).parent.parent / "classifier"))
+        from model_defs import NaFlexClassifier
         from transformers import AutoModel, AutoProcessor
-
-        class NaFlexClassifier(tnn.Module):
-            def __init__(self, hf_model, num_features, dropout=0.2):
-                super().__init__()
-                self.vision_model = hf_model.vision_model
-                self.num_features = num_features
-                hidden = 512
-                self.head = tnn.Sequential(
-                    tnn.LayerNorm(num_features),
-                    tnn.Dropout(dropout),
-                    tnn.Linear(num_features, hidden),
-                    tnn.GELU(),
-                    tnn.LayerNorm(hidden),
-                    tnn.Dropout(dropout * 0.5),
-                    tnn.Linear(hidden, 1),
-                )
-
-            def forward(self, pixel_values, pixel_attention_mask=None, spatial_shapes=None):
-                kwargs = {"pixel_values": pixel_values}
-                if pixel_attention_mask is not None:
-                    kwargs["attention_mask"] = pixel_attention_mask
-                if spatial_shapes is not None:
-                    kwargs["spatial_shapes"] = spatial_shapes
-                outputs = self.vision_model(**kwargs)
-                feats = outputs.pooler_output
-                if feats is None:
-                    feats = outputs.last_hidden_state.mean(dim=1)
-                return self.head(feats)
 
         num_features = info.get('num_features', 1152)
         dropout = checkpoint.get('dropout', 0.2)
@@ -92,32 +66,15 @@ def _load_model_weights(key: str):
 
     elif model_class in ('PreferenceModel', 'timm'):
         import timm
-        from torchvision import transforms as T
 
         input_size = info.get('input_size', 224)
         mean = checkpoint.get('normalize_mean', [0.485, 0.456, 0.406])
         std = checkpoint.get('normalize_std', [0.229, 0.224, 0.225])
 
         if model_class == 'PreferenceModel':
-            class PreferenceModel(tnn.Module):
-                def __init__(self, backbone, num_features, dropout=0.2):
-                    super().__init__()
-                    self.backbone = backbone
-                    self.head = tnn.Sequential(
-                        tnn.LayerNorm(num_features),
-                        tnn.Dropout(p=dropout),
-                        tnn.Linear(num_features, 256),
-                        tnn.GELU(),
-                        tnn.Dropout(p=dropout * 0.5),
-                        tnn.Linear(256, 1),
-                    )
-                def forward(self, x):
-                    feats = self.backbone(x)
-                    if feats.ndim == 4:
-                        feats = feats.mean(dim=(2, 3))
-                    elif feats.ndim == 3:
-                        feats = feats.mean(dim=1)
-                    return self.head(feats)
+            import sys
+            sys.path.insert(0, str(Path(__file__).parent.parent / "classifier"))
+            from model_defs import PreferenceModel
 
             num_features = checkpoint.get('num_features', 1024)
             dropout = checkpoint.get('dropout', 0.2)
@@ -130,12 +87,8 @@ def _load_model_weights(key: str):
 
         cnn.to(_init_device)
         cnn.eval()
-        transform = T.Compose([
-            T.Resize(int(input_size * 1.14), interpolation=T.InterpolationMode.BICUBIC),
-            T.CenterCrop(input_size),
-            T.ToTensor(),
-            T.Normalize(mean=mean, std=std),
-        ])
+        from model_defs import build_timm_transform
+        transform = build_timm_transform(input_size, mean, std)
         info['model'] = cnn
         info['transform'] = transform
         state._cnn_model = info
@@ -293,34 +246,10 @@ def _fused_score(tag_score: float, cnn_score: float | None, tag_weight: float = 
 
 def _build_preference_features(tags_str: str, rating: str, model_data: dict) -> np.ndarray:
     """Build feature vector for a Danbooru image (matches train_classifier.py logic)."""
-    tag_vocab = model_data['tag_vocab']
-    feature_names = model_data['feature_names']
-    n_features = len(feature_names)
-
-    x = np.zeros(n_features, dtype=np.float32)
-    raw_tags = [t.strip().strip(',') for t in tags_str.split()] if tags_str else []
-    image_tags = set()
-    for t in raw_tags:
-        image_tags.add(t)
-        image_tags.add(t.replace('_', ' '))
-
-    tag_to_idx = {t: i for i, t in enumerate(tag_vocab)}
-    matched = 0
-    for tag in image_tags:
-        if tag in tag_to_idx:
-            x[tag_to_idx[tag]] = 1.0
-            matched += 1
-
-    n_tags = len(tag_vocab)
-    rating_map = {'general': 0, 'sensitive': 1, 'questionable': 2, 'explicit': 3}
-    rating_full = {'g': 'general', 's': 'sensitive', 'q': 'questionable', 'e': 'explicit'}
-    rating_name = rating_full.get(rating, '')
-    if rating_name in rating_map:
-        x[n_tags + rating_map[rating_name]] = 1.0
-
-    x[n_tags + 4] = len(raw_tags)
-    x[n_tags + 5] = 1.0
-    return x
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent.parent / "classifier"))
+    from feature_utils import build_tag_features
+    return build_tag_features(tags_str, rating, model_data)
 
 
 async def _reload_preference_model():

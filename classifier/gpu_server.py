@@ -19,46 +19,23 @@ import argparse
 import io
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import torch
-import torch.nn as nn
 import timm
-from torchvision import transforms as T
 from PIL import Image as PILImage
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
 import uvicorn
 
+from model_defs import PreferenceModel, NaFlexClassifier, build_timm_transform
+
 app = FastAPI(title="Sieve GPU Inference")
 
-# Global state
 _model = None
 _transform = None
 _device = None
 _model_info = {}
-
-
-class PreferenceModel(nn.Module):
-    """Must match the training definition exactly."""
-    def __init__(self, backbone, num_features, dropout=0.2):
-        super().__init__()
-        self.backbone = backbone
-        self.head = nn.Sequential(
-            nn.LayerNorm(num_features),
-            nn.Dropout(p=dropout),
-            nn.Linear(num_features, 256),
-            nn.GELU(),
-            nn.Dropout(p=dropout * 0.5),
-            nn.Linear(256, 1),
-        )
-
-    def forward(self, x):
-        feats = self.backbone(x)
-        if feats.ndim == 4:
-            feats = feats.mean(dim=(2, 3))
-        elif feats.ndim == 3:
-            feats = feats.mean(dim=1)
-        return self.head(feats)
 
 
 def load_model(model_path: str, device: str):
@@ -76,26 +53,31 @@ def load_model(model_path: str, device: str):
         backbone = timm.create_model(model_name, pretrained=False, num_classes=0)
         model = PreferenceModel(backbone, num_features, dropout)
         model.load_state_dict(checkpoint["model_state_dict"])
+    elif model_class == "NaFlexClassifier":
+        from transformers import AutoModel, AutoProcessor
+        num_features = checkpoint.get("num_features", 1152)
+        dropout = checkpoint.get("dropout", 0.2)
+        hf_model = AutoModel.from_pretrained(model_name, local_files_only=True)
+        model = NaFlexClassifier(hf_model, num_features, dropout)
+        model.load_state_dict(checkpoint["model_state_dict"])
     else:
         model = timm.create_model(model_name, pretrained=False, num_classes=1)
         model.load_state_dict(checkpoint["model_state_dict"])
 
     model = model.to(_device).eval()
 
-    # Use half precision on GPU for speed
     if _device.type == "cuda":
         model = model.half()
 
     _model = model
-    _transform = T.Compose([
-        T.Resize(int(input_size * 1.14), interpolation=T.InterpolationMode.BICUBIC),
-        T.CenterCrop(input_size),
-        T.ToTensor(),
-        T.Normalize(
-            mean=checkpoint.get("normalize_mean", [0.485, 0.456, 0.406]),
-            std=checkpoint.get("normalize_std", [0.229, 0.224, 0.225]),
-        ),
-    ])
+    if model_class == "NaFlexClassifier":
+        _transform = None
+    else:
+        _transform = build_timm_transform(
+            input_size,
+            checkpoint.get("normalize_mean", [0.485, 0.456, 0.406]),
+            checkpoint.get("normalize_std", [0.229, 0.224, 0.225]),
+        )
 
     _model_info = {
         "model_name": model_name,

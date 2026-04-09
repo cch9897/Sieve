@@ -84,6 +84,14 @@ def _range_file_response(file_path: Path, request: Request) -> StreamingResponse
 
 
 def _read_novel_meta(file_path: str, include_text: bool = False) -> dict:
+    """Extract a YYYY-MM-DD date component from a file path."""
+    if not file_path:
+        return None
+    parts = file_path.split("/")
+    for p in parts:
+        if len(p) == 10 and p[4] == '-' and p[7] == '-':
+            return p
+    return None
     """Read novel metadata from JSON file on disk, with in-memory caching."""
     if not file_path:
         return {}
@@ -128,3 +136,14 @@ def _read_novel_meta(file_path: str, include_text: bool = False) -> dict:
         return result
     except Exception:
         return {}
+
+
+def extract_date_from_path(file_path: str | None) -> str | None:
+    """Extract a YYYY-MM-DD date component from a file path."""
+    if not file_path:
+        return None
+    parts = file_path.split("/")
+    for p in parts:
+        if len(p) == 10 and p[4] == '-' and p[7] == '-':
+            return p
+    return None

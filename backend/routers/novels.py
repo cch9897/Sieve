@@ -5,7 +5,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
 
 from database import get_db
-from utils import _read_novel_meta
+from utils import _read_novel_meta, extract_date_from_path
 
 router = APIRouter()
 
@@ -63,12 +63,7 @@ async def list_novels(
         novels = []
         for r, meta in zip(rows, metas):
             fp = r["file_path"]
-            parts = fp.split("/") if fp else []
-            novel_date = None
-            for p in parts:
-                if len(p) == 10 and p[4] == '-' and p[7] == '-':
-                    novel_date = p
-                    break
+            novel_date = extract_date_from_path(fp)
 
             novels.append({
                 "id": r["id"],
@@ -109,12 +104,7 @@ async def list_novels(
         novels = []
         for r, meta in zip(rows, metas):
             fp = r["file_path"]
-            parts = fp.split("/") if fp else []
-            novel_date = None
-            for p in parts:
-                if len(p) == 10 and p[4] == '-' and p[7] == '-':
-                    novel_date = p
-                    break
+            novel_date = extract_date_from_path(fp)
 
             novels.append({
                 "id": r["id"],
@@ -150,12 +140,9 @@ async def get_novel_dates():
 
     dates = set()
     for r in rows:
-        fp = r[0]
-        parts = fp.split("/") if fp else []
-        for p in parts:
-            if len(p) == 10 and p[4:5] == '-' and p[7:8] == '-':
-                dates.add(p)
-                break
+        d = extract_date_from_path(r[0])
+        if d:
+            dates.add(d)
 
     return {"dates": sorted(dates, reverse=True)}
 

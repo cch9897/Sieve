@@ -126,7 +126,6 @@ def load_eva02_model(path: Path | None = None):
 
     import timm
     import torch
-    from torchvision import transforms as T
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     checkpoint = torch.load(str(model_path), map_location=device, weights_only=False)
@@ -137,27 +136,9 @@ def load_eva02_model(path: Path | None = None):
     dropout = checkpoint.get('dropout', 0.3)
 
     if model_class == 'PreferenceModel':
-        import torch.nn as tnn
-
-        class PreferenceModel(tnn.Module):
-            def __init__(self, backbone, num_features, dropout=0.3):
-                super().__init__()
-                self.backbone = backbone
-                self.head = tnn.Sequential(
-                    tnn.LayerNorm(num_features),
-                    tnn.Dropout(dropout),
-                    tnn.Linear(num_features, 256),
-                    tnn.GELU(),
-                    tnn.Dropout(dropout * 0.5),
-                    tnn.Linear(256, 1),
-                )
-            def forward(self, x):
-                feats = self.backbone(x)
-                if feats.ndim == 4:
-                    feats = feats.mean(dim=(2, 3))
-                elif feats.ndim == 3:
-                    feats = feats.mean(dim=1)
-                return self.head(feats).squeeze(-1)
+        import sys
+        sys.path.insert(0, str(CLASSIFIER_DIR))
+        from model_defs import PreferenceModel
 
         backbone = timm.create_model(model_name, pretrained=False, num_classes=0)
         num_features = backbone.num_features
@@ -172,12 +153,8 @@ def load_eva02_model(path: Path | None = None):
 
     mean = checkpoint.get('normalize_mean', [0.485, 0.456, 0.406])
     std = checkpoint.get('normalize_std', [0.229, 0.224, 0.225])
-    transform = T.Compose([
-        T.Resize(int(input_size * 1.14), interpolation=T.InterpolationMode.BICUBIC),
-        T.CenterCrop(input_size),
-        T.ToTensor(),
-        T.Normalize(mean=mean, std=std),
-    ])
+    from model_defs import build_timm_transform
+    transform = build_timm_transform(input_size, mean, std)
 
     print(f"Loaded EVA02: {model_name} ({model_class}), input={input_size}, device={device}", flush=True)
     return model, transform, device, model_name
@@ -197,7 +174,6 @@ def load_siglip2_model(path: Path | None = None):
 
     try:
         import torch
-        import torch.nn as tnn
         from transformers import AutoModel, AutoProcessor
     except ImportError:
         print("transformers not installed, skipping SigLIP2", flush=True)
@@ -210,33 +186,9 @@ def load_siglip2_model(path: Path | None = None):
     num_features = checkpoint.get('num_features', 1152)
     dropout = checkpoint.get('dropout', 0.2)
 
-    class NaFlexClassifier(tnn.Module):
-        def __init__(self, hf_model, num_features, dropout=0.2):
-            super().__init__()
-            self.vision_model = hf_model.vision_model
-            self.num_features = num_features
-            hidden = 512
-            self.head = tnn.Sequential(
-                tnn.LayerNorm(num_features),
-                tnn.Dropout(dropout),
-                tnn.Linear(num_features, hidden),
-                tnn.GELU(),
-                tnn.LayerNorm(hidden),
-                tnn.Dropout(dropout * 0.5),
-                tnn.Linear(hidden, 1),
-            )
-
-        def forward(self, pixel_values, pixel_attention_mask=None, spatial_shapes=None):
-            kwargs = {"pixel_values": pixel_values}
-            if pixel_attention_mask is not None:
-                kwargs["attention_mask"] = pixel_attention_mask
-            if spatial_shapes is not None:
-                kwargs["spatial_shapes"] = spatial_shapes
-            outputs = self.vision_model(**kwargs)
-            feats = outputs.pooler_output
-            if feats is None:
-                feats = outputs.last_hidden_state.mean(dim=1)
-            return self.head(feats)
+    import sys
+    sys.path.insert(0, str(CLASSIFIER_DIR))
+    from model_defs import NaFlexClassifier
 
     hf_model = AutoModel.from_pretrained(model_name, local_files_only=True)
     processor = AutoProcessor.from_pretrained(model_name, local_files_only=True)
