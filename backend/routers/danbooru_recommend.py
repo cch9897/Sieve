@@ -28,25 +28,31 @@ async def danbooru_recommended(
     model = state._preference_model['model']
     client = get_danbooru_client()
 
-    # Get labeled IDs to exclude
-    dldb = await get_danbooru_labels_db()
-    async with dldb.execute("SELECT image_id FROM labels") as c:
-        labeled_ids = {r[0] for r in await c.fetchall()}
-
-    # Fetch multiple pages from DanbooruFinder (200 images)
-    all_images = []
+    # Fetch multiple pages from DanbooruFinder in parallel (200 images)
     fetch_pages = 5
-    for p in range(1, fetch_pages + 1):
-        params: dict = {"page": str(p), "per_page": "40", "order_by": "random"}
+
+    async def _fetch_page(p: int) -> list:
+        req_params: dict = {"page": str(p), "per_page": "40", "order_by": "random"}
         if rating:
-            params["rating"] = rating
+            req_params["rating"] = rating
         try:
-            resp = await client.get("/search", params=params)
-            data = resp.json()
-            results = data.get("results", [])
-            all_images.extend(results)
+            resp = await client.get("/search", params=req_params)
+            return resp.json().get("results", [])
         except httpx.HTTPError:
-            continue
+            return []
+
+    page_results = await asyncio.gather(*[_fetch_page(p) for p in range(1, fetch_pages + 1)])
+    all_images = [img for results in page_results for img in results]
+
+    # Check only fetched IDs against labels (not ALL labeled IDs)
+    dldb = await get_danbooru_labels_db()
+    candidate_ids = [img["id"] for img in all_images]
+    if candidate_ids:
+        placeholders = ",".join("?" * len(candidate_ids))
+        async with dldb.execute(f"SELECT image_id FROM labels WHERE image_id IN ({placeholders})", candidate_ids) as c:
+            labeled_ids = {r[0] for r in await c.fetchall()}
+    else:
+        labeled_ids = set()
 
     # Filter out already labeled
     unlabeled = [img for img in all_images if img["id"] not in labeled_ids]
@@ -65,12 +71,15 @@ async def danbooru_recommended(
             },
         }
 
-    # Build features and predict
-    X = np.array([
-        _build_preference_features(img.get("tags", ""), img.get("rating", ""), state._preference_model)
-        for img in unlabeled
-    ])
-    probas = model.predict_proba(X)[:, 1]
+    # Build features and predict (CPU-bound, run in thread)
+    def _predict():
+        X = np.array([
+            _build_preference_features(img.get("tags", ""), img.get("rating", ""), state._preference_model)
+            for img in unlabeled
+        ])
+        return model.predict_proba(X)[:, 1]
+
+    probas = await asyncio.to_thread(_predict)
 
     # Combine and filter by min_score
     scored = []
@@ -131,7 +140,7 @@ async def danbooru_candidates_stats():
             "model_loaded": state._preference_model is not None,
         }
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     def _query():
         conn = sqlite3.connect(str(CANDIDATES_DB_PATH), timeout=30)
@@ -266,4 +275,4 @@ async def danbooru_candidates_stats():
             },
         }
 
-    return await loop.run_in_executor(None, _query)
+    return await loop.run_in_executor(state._db_executor, _query)

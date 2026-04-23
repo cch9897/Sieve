@@ -2,9 +2,11 @@ import json
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
 
 import state
 from database import get_db, get_labels_db_async
+from utils import ttl_cache
 
 VIDEO_EXTS = state.VIDEO_EXTS
 _video_exclude_sql, _video_exclude_params = state.video_filter_sql()
@@ -15,6 +17,11 @@ router = APIRouter()
 @router.get("/api/autotags/stats")
 async def auto_tags_stats():
     """Get auto-tagging progress stats."""
+    return await _auto_tags_stats_cached()
+
+
+@ttl_cache(seconds=30)
+async def _auto_tags_stats_cached():
     db = await get_db()
     ldb = await get_labels_db_async()
 
@@ -86,16 +93,17 @@ async def search_by_auto_tag(
 
     # Find image IDs whose general_json or character_json contains the tag
     # We search top_tags for quick text matching
-    pattern = f"%{tag}%"
+    escaped_tag = tag.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    pattern = f"%{escaped_tag}%"
     offset = (page - 1) * per_page
 
     async with ldb.execute(
-        "SELECT COUNT(*) FROM auto_tags WHERE top_tags LIKE ?", [pattern]
+        "SELECT COUNT(*) FROM auto_tags WHERE top_tags LIKE ? ESCAPE '\\'", [pattern]
     ) as c:
         total = (await c.fetchone())[0]
 
     async with ldb.execute(
-        "SELECT image_id, top_tags FROM auto_tags WHERE top_tags LIKE ? ORDER BY image_id DESC LIMIT ? OFFSET ?",
+        "SELECT image_id, top_tags FROM auto_tags WHERE top_tags LIKE ? ESCAPE '\\' ORDER BY image_id DESC LIMIT ? OFFSET ?",
         [pattern, per_page, offset],
     ) as c:
         tag_rows = await c.fetchall()
@@ -151,6 +159,37 @@ async def batch_auto_tags(ids: str = Query(..., description="Comma-separated ima
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid image IDs")
 
+    if not image_ids:
+        return {"tags": {}}
+
+    ldb = await get_labels_db_async()
+    placeholders = ",".join("?" * len(image_ids))
+    async with ldb.execute(
+        f"SELECT image_id, top_tags, rating_json FROM auto_tags WHERE image_id IN ({placeholders})",
+        image_ids,
+    ) as c:
+        rows = await c.fetchall()
+
+    result = {}
+    for r in rows:
+        try:
+            rating = json.loads(r[2])
+            top_rating = max(rating.items(), key=lambda x: x[1])[0] if rating else ""
+        except Exception:
+            top_rating = ""
+        result[str(r[0])] = {"top_tags": r[1], "rating": top_rating}
+
+    return {"tags": result}
+
+
+class BatchAutoTagsRequest(BaseModel):
+    ids: list[int]
+
+
+@router.post("/api/autotags/batch")
+async def batch_auto_tags_post(req: BatchAutoTagsRequest):
+    """Get auto-tags for multiple images (POST for large ID lists)."""
+    image_ids = req.ids[:200]
     if not image_ids:
         return {"tags": {}}
 

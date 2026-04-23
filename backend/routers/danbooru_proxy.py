@@ -23,21 +23,26 @@ async def danbooru_search(request: Request):
 async def _stream_upstream(client: httpx.AsyncClient, url: str, default_media: str):
     """Stream an upstream response chunk-by-chunk instead of buffering entirely."""
     try:
-        async with client.stream("GET", url, timeout=60.0) as resp:
-            if resp.status_code != 200:
-                raise HTTPException(status_code=502, detail="Upstream error")
-
-            async def _iter():
-                async for chunk in resp.aiter_bytes(CHUNK_SIZE):
-                    yield chunk
-
-            return StreamingResponse(
-                _iter(),
-                media_type=resp.headers.get("content-type", default_media),
-                headers={"Cache-Control": "public, max-age=86400, immutable"},
-            )
+        resp = await client.send(client.build_request("GET", url), stream=True)
     except httpx.HTTPError as e:
         raise HTTPException(status_code=502, detail=f"DanbooruFinder error: {e}")
+
+    if resp.status_code != 200:
+        await resp.aclose()
+        raise HTTPException(status_code=502, detail=f"Upstream error: {resp.status_code}")
+
+    async def _iterate():
+        try:
+            async for chunk in resp.aiter_bytes(CHUNK_SIZE):
+                yield chunk
+        finally:
+            await resp.aclose()
+
+    return StreamingResponse(
+        _iterate(),
+        media_type=resp.headers.get("content-type", default_media),
+        headers={"Cache-Control": "public, max-age=86400, immutable"},
+    )
 
 
 @router.get("/api/danbooru/preview/{image_id}.{ext}")

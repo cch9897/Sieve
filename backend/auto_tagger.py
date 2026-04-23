@@ -180,6 +180,8 @@ def run(batch: int = 50, sleep_sec: float = 1.0, threshold: float = 0.35,
 
     # Lazy import to delay model loading
     from imgutils.tagging import get_wd14_tags
+    from PIL import Image as _PILImage
+    _PILImage.MAX_IMAGE_PIXELS = 80_000_000  # skip decompression bombs
 
     success = 0
     errors = 0
@@ -187,6 +189,11 @@ def run(batch: int = 50, sleep_sec: float = 1.0, threshold: float = 0.35,
     for i, (image_id, file_path) in enumerate(candidates):
         full_path = CRAWLER_DIR / file_path
         try:
+            # Skip images with too many pixels to avoid OOM
+            with _PILImage.open(str(full_path)) as _img:
+                _w, _h = _img.size
+                if _w * _h > 80_000_000:
+                    raise ValueError(f"Image too large: {_w}x{_h} = {_w*_h} pixels")
             rating, general, characters = get_wd14_tags(
                 str(full_path),
                 model_name=model_name,

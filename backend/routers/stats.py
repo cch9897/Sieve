@@ -1,12 +1,18 @@
 from fastapi import APIRouter
 
 from database import get_db
+from utils import ttl_cache
 
 router = APIRouter()
 
 
 @router.get("/api/stats")
 async def get_stats():
+    return await _get_stats_cached()
+
+
+@ttl_cache(seconds=30)
+async def _get_stats_cached():
     db = await get_db()
     stats = {}
 
@@ -54,6 +60,11 @@ async def get_stats():
 
 @router.get("/api/dates")
 async def get_dates():
+    return await _get_dates_cached()
+
+
+@ttl_cache(seconds=60)
+async def _get_dates_cached():
     db = await get_db()
     async with db.execute(
         """SELECT DISTINCT substr(file_path, 11, 10) as date
@@ -66,6 +77,11 @@ async def get_dates():
 
 @router.get("/api/sources")
 async def get_sources():
+    return await _get_sources_cached()
+
+
+@ttl_cache(seconds=60)
+async def _get_sources_cached():
     db = await get_db()
     async with db.execute(
         "SELECT source, COUNT(*) as cnt FROM images WHERE file_path IS NOT NULL GROUP BY source ORDER BY source"

@@ -1,3 +1,9 @@
+export type View = 'gallery' | 'novels' | 'labeler' | 'danbooru' | 'stats'
+export type GalleryMode = 'infinite' | 'paged'
+export type MediaFilter = '' | 'image' | 'video'
+export type LabelerTab = 'review' | 'history' | 'stats'
+export type DanbooruLabelerTab = 'review' | 'history' | 'stats' | 'recommended'
+
 export interface ImageItem {
   id: number
   source: string

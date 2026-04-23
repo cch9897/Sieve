@@ -2,6 +2,7 @@ import asyncio
 import io
 import json
 import os
+import random
 import zipfile
 from pathlib import Path
 from typing import Optional
@@ -13,12 +14,11 @@ from pydantic import BaseModel
 import state
 from config import CRAWLER_DIR
 from database import get_db, get_labels_db_async
-from utils import _fetch_all_vision_scores
+from utils import _fetch_all_vision_scores, ttl_cache
 
 VIDEO_EXTS = state.VIDEO_EXTS
 _video_exclude_sql, _video_exclude_params = state.video_filter_sql()
-_video_include_parts = " OR ".join("file_path LIKE ?" for _ in sorted(VIDEO_EXTS))
-_video_include_params = [f"%{ext}" for ext in sorted(VIDEO_EXTS)]
+_video_include_parts, _video_include_params = state.video_include_sql()
 
 router = APIRouter()
 
@@ -34,12 +34,7 @@ async def labeler_next(
     media: Optional[str] = Query(None, pattern="^(image|video)$"),
 ):
     """Get the next unlabeled image for review."""
-    db = await get_db()
     ldb = await get_labels_db_async()
-
-    # Get all labeled image IDs
-    async with ldb.execute("SELECT image_id FROM labels") as c:
-        labeled_ids = {r[0] for r in await c.fetchall()}
 
     conditions = ["file_path IS NOT NULL"]
     params: list = []
@@ -53,45 +48,50 @@ async def labeler_next(
         conditions.append(_video_exclude_sql)
         params.extend(_video_exclude_params)
 
-    if labeled_ids:
-        for i in range(0, len(labeled_ids), 900):
-            batch = list(labeled_ids)[i:i+900]
-            placeholders = ",".join("?" * len(batch))
-            conditions.append(f"id NOT IN ({placeholders})")
-            params.extend(batch)
-
+    conditions.append("id NOT IN (SELECT image_id FROM labels)")
     where = " AND ".join(conditions)
 
-    # Count remaining
-    async with db.execute(f"SELECT COUNT(*) FROM images WHERE {where}", params) as c:
+    async with ldb.execute("SELECT COUNT(*) FROM labels") as c:
+        total_labeled = (await c.fetchone())[0]
+
+    async with ldb.execute(f"SELECT COUNT(*) FROM main_db.images WHERE {where}", params) as c:
         remaining = (await c.fetchone())[0]
 
     if remaining == 0:
-        return {"image": None, "remaining": 0, "total_labeled": len(labeled_ids)}
+        return {"image": None, "remaining": 0, "total_labeled": total_labeled}
 
-    # Get random unlabeled images, try up to 10 to find one with an existing file
-    sql = f"SELECT id, source, source_id, file_path, url, created_at FROM images WHERE {where} ORDER BY RANDOM() LIMIT 10"
-    async with db.execute(sql, params) as c:
+    # ID-based random sampling: O(log n) via PK scan instead of O(n) OFFSET
+    minmax_sql = f"SELECT MIN(id), MAX(id) FROM main_db.images WHERE {where}"
+    async with ldb.execute(minmax_sql, params) as c:
+        min_id, max_id = (await c.fetchone())
+
+    random_id = random.randint(min_id, max_id)
+    forward_sql = f"SELECT id, source, source_id, file_path, url, created_at FROM main_db.images WHERE {where} AND id >= ? ORDER BY id LIMIT 10"
+    async with ldb.execute(forward_sql, params + [random_id]) as c:
         candidates = await c.fetchall()
+
+    if len(candidates) < 10 and len(candidates) < remaining:
+        seen_ids = {row["id"] for row in candidates}
+        wrap_sql = f"SELECT id, source, source_id, file_path, url, created_at FROM main_db.images WHERE {where} AND id < ? ORDER BY id LIMIT ?"
+        async with ldb.execute(wrap_sql, params + [random_id, 10 - len(candidates)]) as c:
+            wrap_rows = await c.fetchall()
+        for row in wrap_rows:
+            if row["id"] not in seen_ids:
+                candidates.append(row)
+
+    candidate_ids = [row["id"] for row in candidates]
+    all_scores = await _fetch_all_vision_scores(ldb, candidate_ids)
+    active_db_name = state._active_model_db_name() if state._active_model else ""
 
     for row in candidates:
         fp = row["file_path"]
         full_path = CRAWLER_DIR / fp
         if not full_path.exists():
-            # Auto-skip missing files
             continue
 
         ext = Path(fp).suffix.lower()
         parts = fp.split("/")
-
-        # Look up vision scores (all models)
-        scores: dict[str, float] = {}
-        async with ldb.execute(
-            "SELECT model_name, score FROM vision_scores WHERE image_id = ?", [row["id"]]
-        ) as vc:
-            async for vrow in vc:
-                scores[vrow[0]] = round(vrow[1], 4)
-        active_db_name = state._active_model_db_name() if state._active_model else ""
+        scores = all_scores.get(row["id"], {})
         vision_score = scores.get(active_db_name) if active_db_name else next(iter(scores.values()), None)
 
         return {
@@ -109,10 +109,10 @@ async def labeler_next(
                 "vision_scores": scores,
             },
             "remaining": remaining,
-            "total_labeled": len(labeled_ids),
+            "total_labeled": total_labeled,
         }
 
-    return {"image": None, "remaining": 0, "total_labeled": len(labeled_ids)}
+    return {"image": None, "remaining": remaining, "total_labeled": total_labeled}
 
 
 @router.post("/api/labeler/{image_id}")
@@ -128,17 +128,15 @@ async def label_image(image_id: int, req: LabelRequest):
         [image_id, req.verdict],
     )
 
-    # Handle tags
     if req.tags:
-        for tag in req.tags:
-            tag = tag.strip()
-            if tag:
-                await ldb.execute(
-                    "INSERT OR IGNORE INTO tags (image_id, tag) VALUES (?, ?)",
-                    [image_id, tag],
-                )
+        clean_tags = [(image_id, t.strip()) for t in req.tags if t.strip()]
+        if clean_tags:
+            await ldb.executemany(
+                "INSERT OR IGNORE INTO tags (image_id, tag) VALUES (?, ?)", clean_tags
+            )
 
     await ldb.commit()
+    _labeler_stats_cached.cache_clear()
     return {"ok": True}
 
 
@@ -149,16 +147,21 @@ async def unlabel_image(image_id: int):
     await ldb.execute("DELETE FROM labels WHERE image_id = ?", [image_id])
     await ldb.execute("DELETE FROM tags WHERE image_id = ?", [image_id])
     await ldb.commit()
+    _labeler_stats_cached.cache_clear()
     return {"ok": True}
 
 
 @router.get("/api/labeler/stats")
 async def labeler_stats():
     """Get labeling statistics."""
-    db = await get_db()
+    return await _labeler_stats_cached()
+
+
+@ttl_cache(seconds=15)
+async def _labeler_stats_cached():
     ldb = await get_labels_db_async()
 
-    async with db.execute("SELECT COUNT(*) FROM images WHERE file_path IS NOT NULL") as c:
+    async with ldb.execute("SELECT COUNT(*) FROM main_db.images WHERE file_path IS NOT NULL") as c:
         total_images = (await c.fetchone())[0]
 
     stats = {"total_images": total_images, "liked": 0, "disliked": 0, "skipped": 0}
@@ -169,72 +172,46 @@ async def labeler_stats():
     stats["total_labeled"] = stats["liked"] + stats["disliked"] + stats["skipped"]
     stats["remaining"] = total_images - stats["total_labeled"]
 
-    # Top tags (manual)
     async with ldb.execute("SELECT tag, COUNT(*) as cnt FROM tags GROUP BY tag ORDER BY cnt DESC LIMIT 50") as c:
         stats["top_tags"] = [{"tag": r[0], "count": r[1]} for r in await c.fetchall()]
 
-    # --- Liked images: auto-tag ranking & source distribution ---
-    # Get liked image IDs
-    async with ldb.execute("SELECT image_id FROM labels WHERE verdict = 'liked'") as c:
-        liked_ids = [r[0] for r in await c.fetchall()]
+    # Source distribution for liked images (cross-DB JOIN)
+    async with ldb.execute("""
+        SELECT i.source, COUNT(*) FROM main_db.images i
+        INNER JOIN labels l ON i.id = l.image_id
+        WHERE l.verdict = 'liked'
+        GROUP BY i.source ORDER BY COUNT(*) DESC
+    """) as c:
+        stats["liked_by_source"] = {r[0]: r[1] for r in await c.fetchall()}
 
-    # Source distribution for liked images
-    liked_by_source: dict[str, int] = {}
-    if liked_ids:
-        # Query in batches to avoid SQL variable limit
-        for i in range(0, len(liked_ids), 500):
-            batch = liked_ids[i:i+500]
-            placeholders = ",".join("?" * len(batch))
-            async with db.execute(
-                f"SELECT source, COUNT(*) FROM images WHERE id IN ({placeholders}) GROUP BY source",
-                batch,
-            ) as c:
-                for r in await c.fetchall():
-                    liked_by_source[r[0]] = liked_by_source.get(r[0], 0) + r[1]
-    stats["liked_by_source"] = dict(sorted(liked_by_source.items(), key=lambda x: x[1], reverse=True))
-
-    # Total images per source (for like-rate calculation)
-    async with db.execute(
-        "SELECT source, COUNT(*) FROM images WHERE file_path IS NOT NULL GROUP BY source"
+    # Total images per source
+    async with ldb.execute(
+        "SELECT source, COUNT(*) FROM main_db.images WHERE file_path IS NOT NULL GROUP BY source"
     ) as c:
         stats["total_by_source"] = {r[0]: r[1] for r in await c.fetchall()}
 
-    # Labeled (liked+disliked) per source for like-rate denominator
-    labeled_ids: list[int] = []
-    async with ldb.execute("SELECT image_id FROM labels WHERE verdict IN ('liked', 'disliked')") as c:
-        labeled_ids = [r[0] for r in await c.fetchall()]
+    # Labeled (liked+disliked) per source
+    async with ldb.execute("""
+        SELECT i.source, COUNT(*) FROM main_db.images i
+        INNER JOIN labels l ON i.id = l.image_id
+        WHERE l.verdict IN ('liked', 'disliked')
+        GROUP BY i.source
+    """) as c:
+        stats["labeled_by_source"] = {r[0]: r[1] for r in await c.fetchall()}
 
-    labeled_by_source: dict[str, int] = {}
-    if labeled_ids:
-        for i in range(0, len(labeled_ids), 500):
-            batch = labeled_ids[i:i+500]
-            placeholders = ",".join("?" * len(batch))
-            async with db.execute(
-                f"SELECT source, COUNT(*) FROM images WHERE id IN ({placeholders}) GROUP BY source",
-                batch,
-            ) as c:
-                for r in await c.fetchall():
-                    labeled_by_source[r[0]] = labeled_by_source.get(r[0], 0) + r[1]
-    stats["labeled_by_source"] = labeled_by_source
-
-    # Auto-tag ranking for liked images
+    # Auto-tag ranking for liked images (labels + auto_tags in same DB)
     liked_auto_tags: dict[str, int] = {}
-    if liked_ids:
-        for i in range(0, len(liked_ids), 500):
-            batch = liked_ids[i:i+500]
-            placeholders = ",".join("?" * len(batch))
-            async with ldb.execute(
-                f"SELECT general_json FROM auto_tags WHERE top_tags != '_error' AND image_id IN ({placeholders})",
-                batch,
-            ) as c:
-                import json as _json
-                for r in await c.fetchall():
-                    try:
-                        tags_dict = _json.loads(r[0])
-                        for tag in tags_dict:
-                            liked_auto_tags[tag] = liked_auto_tags.get(tag, 0) + 1
-                    except Exception:
-                        pass
+    async with ldb.execute("""
+        SELECT at.general_json FROM auto_tags at
+        INNER JOIN labels l ON at.image_id = l.image_id
+        WHERE l.verdict = 'liked' AND at.top_tags != '_error'
+    """) as c:
+        for r in await c.fetchall():
+            try:
+                for tag in json.loads(r[0]):
+                    liked_auto_tags[tag] = liked_auto_tags.get(tag, 0) + 1
+            except Exception:
+                pass
     top_liked_tags = sorted(liked_auto_tags.items(), key=lambda x: x[1], reverse=True)[:50]
     stats["liked_top_auto_tags"] = [{"tag": t, "count": c} for t, c in top_liked_tags]
 
@@ -346,10 +323,11 @@ async def update_tags(image_id: int, tags: list[str]):
     """Replace all tags for an image."""
     ldb = await get_labels_db_async()
     await ldb.execute("DELETE FROM tags WHERE image_id = ?", [image_id])
-    for tag in tags:
-        tag = tag.strip()
-        if tag:
-            await ldb.execute("INSERT OR IGNORE INTO tags (image_id, tag) VALUES (?, ?)", [image_id, tag])
+    clean_tags = [(image_id, t.strip()) for t in tags if t.strip()]
+    if clean_tags:
+        await ldb.executemany(
+            "INSERT OR IGNORE INTO tags (image_id, tag) VALUES (?, ?)", clean_tags
+        )
     await ldb.commit()
     return {"ok": True}
 
@@ -474,7 +452,7 @@ async def export_liked(
 
     loop = asyncio.get_running_loop()
     try:
-        tmp_path, dl_filename = await loop.run_in_executor(None, _build_zip_sync)
+        tmp_path, dl_filename = await loop.run_in_executor(state._io_executor, _build_zip_sync)
     except Exception:
         raise
 

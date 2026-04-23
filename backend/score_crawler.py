@@ -6,6 +6,7 @@ Uses batch GPU inference + threaded preprocessing for speed.
 """
 
 import argparse
+import logging
 import os
 import signal
 import sqlite3
@@ -14,12 +15,20 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+logger = logging.getLogger(__name__)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)-5s [%(name)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+
 # Graceful shutdown
 _shutdown = False
 def _handle_signal(signum, frame):
     global _shutdown
     _shutdown = True
-    print(f"\nReceived signal {signum}, finishing current batch...", flush=True)
+    logger.info("Received signal %d, finishing current batch...", signum)
 
 signal.signal(signal.SIGTERM, _handle_signal)
 signal.signal(signal.SIGINT, _handle_signal)
@@ -61,7 +70,7 @@ def init_vision_scores_table(conn: sqlite3.Connection):
     if row:
         ddl = row[0] or ""
         if "PRIMARY KEY (image_id, model_name)" not in ddl:
-            print("[db] Migrating vision_scores to multi-model format...", flush=True)
+            logger.info("[db] Migrating vision_scores to multi-model format...")
             conn.execute("ALTER TABLE vision_scores RENAME TO vision_scores_old")
             conn.execute("""
                 CREATE TABLE vision_scores (
@@ -77,7 +86,7 @@ def init_vision_scores_table(conn: sqlite3.Connection):
                 SELECT image_id, 'default', score, scored_at FROM vision_scores_old
             """)
             conn.execute("DROP TABLE vision_scores_old")
-            print("[db] Migration complete.", flush=True)
+            logger.info("[db] Migration complete.")
     else:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS vision_scores (
@@ -121,7 +130,7 @@ def load_eva02_model(path: Path | None = None):
         if discovered["eva02"]:
             model_path = discovered["eva02"][-1]  # latest by name
         else:
-            print("EVA02 model not found", flush=True)
+            logger.warning("EVA02 model not found")
             return None
 
     import timm
@@ -156,7 +165,7 @@ def load_eva02_model(path: Path | None = None):
     from model_defs import build_timm_transform
     transform = build_timm_transform(input_size, mean, std)
 
-    print(f"Loaded EVA02: {model_name} ({model_class}), input={input_size}, device={device}", flush=True)
+    logger.info("Loaded EVA02: %s (%s), input=%d, device=%s", model_name, model_class, input_size, device)
     return model, transform, device, model_name
 
 
@@ -169,14 +178,14 @@ def load_siglip2_model(path: Path | None = None):
         if discovered["siglip2"]:
             model_path = discovered["siglip2"][-1]
         else:
-            print("SigLIP2 model not found", flush=True)
+            logger.warning("SigLIP2 model not found")
             return None
 
     try:
         import torch
         from transformers import AutoModel, AutoProcessor
     except ImportError:
-        print("transformers not installed, skipping SigLIP2", flush=True)
+        logger.warning("transformers not installed, skipping SigLIP2")
         return None
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -197,7 +206,7 @@ def load_siglip2_model(path: Path | None = None):
     clf.to(device)
     clf.eval()
 
-    print(f"Loaded SigLIP2: {model_name}, AUC={checkpoint.get('cv_auc', 0):.4f}, device={device}", flush=True)
+    logger.info("Loaded SigLIP2: %s, AUC=%.4f, device=%s", model_name, checkpoint.get('cv_auc', 0), device)
     return clf, processor, device, model_name
 
 
@@ -266,10 +275,10 @@ def score_with_eva02(model, transform, device, to_score, labels_conn, model_name
 
         elapsed = time.time() - start
         rate = scored / elapsed if elapsed > 0 else 0
-        print(f"  [eva02] Progress: {scored}/{len(to_score)} ({rate:.1f}/s), errors: {errors}", flush=True)
+        logger.info("[eva02] Progress: %d/%d (%.1f/s), errors: %d", scored, len(to_score), rate, errors)
 
     elapsed = time.time() - start
-    print(f"[eva02] Done: scored {scored}, errors {errors}, time {elapsed:.1f}s", flush=True)
+    logger.info("[eva02] Done: scored %d, errors %d, time %.1fs", scored, errors, elapsed)
     return scored, errors
 
 
@@ -338,10 +347,10 @@ def score_with_siglip2(model, processor, device, to_score, labels_conn, model_na
 
         elapsed = time.time() - start
         rate = scored / elapsed if elapsed > 0 else 0
-        print(f"  [siglip2] Progress: {scored}/{len(to_score)} ({rate:.1f}/s), errors: {errors}", flush=True)
+        logger.info("[siglip2] Progress: %d/%d (%.1f/s), errors: %d", scored, len(to_score), rate, errors)
 
     elapsed = time.time() - start
-    print(f"[siglip2] Done: scored {scored}, errors {errors}, time {elapsed:.1f}s", flush=True)
+    logger.info("[siglip2] Done: scored %d, errors %d, time %.1fs", scored, errors, elapsed)
     return scored, errors
 
 
@@ -354,7 +363,7 @@ def main():
     args = parser.parse_args()
 
     if not DB_PATH.exists():
-        print(f"Crawler DB not found: {DB_PATH}", flush=True)
+        logger.error("Crawler DB not found: %s", DB_PATH)
         sys.exit(1)
 
     # Open DBs
@@ -377,7 +386,7 @@ def main():
         siglip2_result = load_siglip2_model(explicit_path if args.model == "siglip2" else None)
 
     if not eva02_result and not siglip2_result:
-        print("No models could be loaded, exiting.", flush=True)
+        logger.error("No models could be loaded, exiting.")
         sys.exit(1)
 
     # Get all images from crawler (skip videos/archives)
@@ -394,7 +403,7 @@ def main():
         if full_path.exists():
             all_images.append((r['id'], full_path))
 
-    print(f"Total scorable images: {len(all_images)}", flush=True)
+    logger.info("Total scorable images: %d", len(all_images))
 
     # Score with each model
     if eva02_result and not _shutdown:
@@ -405,7 +414,7 @@ def main():
             ).fetchall()
         )
         to_score = [(img_id, path) for img_id, path in all_images if img_id not in scored_ids]
-        print(f"[eva02] Already scored: {len(scored_ids)}, to score: {len(to_score)}", flush=True)
+        logger.info("[eva02] Already scored: %d, to score: %d", len(scored_ids), len(to_score))
         if to_score:
             score_with_eva02(model, transform, device, to_score, labels_conn, model_name)
         # Free memory
@@ -425,7 +434,7 @@ def main():
             ).fetchall()
         )
         to_score = [(img_id, path) for img_id, path in all_images if img_id not in scored_ids]
-        print(f"[siglip2] Already scored: {len(scored_ids)}, to score: {len(to_score)}", flush=True)
+        logger.info("[siglip2] Already scored: %d, to score: %d", len(scored_ids), len(to_score))
         if to_score:
             score_with_siglip2(model, processor, device, to_score, labels_conn, model_name)
         # Free memory
@@ -442,13 +451,13 @@ def main():
         import torch
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-            print("[cleanup] GPU memory released", flush=True)
+            logger.info("[cleanup] GPU memory released")
     except Exception:
         pass
 
     crawler_conn.close()
     labels_conn.close()
-    print("All done.", flush=True)
+    logger.info("All done.")
 
 
 if __name__ == "__main__":

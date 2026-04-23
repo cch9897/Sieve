@@ -40,3 +40,6 @@ Thumbs.db
 
 # Temp
 _tmp_pack/
+
+# Generated caches
+classifier/_resize_cache/

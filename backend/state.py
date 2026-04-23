@@ -6,7 +6,10 @@ via attribute lookup (``state.xxx``).  Never bind these with
 """
 
 import asyncio
+import concurrent.futures
 import subprocess
+import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Optional
 
@@ -22,6 +25,7 @@ _cnn_model: dict | None = None  # backward compat alias
 # Multi-model support (lazy loading: metadata at startup, weights on demand)
 _models: dict[str, dict] = {}
 _active_model: str | None = None
+_active_model_lock = threading.Lock()
 _loaded_model_key: str | None = None
 
 # ---------------------------------------------------------------------------
@@ -44,6 +48,16 @@ def video_filter_sql(column: str = "file_path") -> tuple[str, list]:
         conditions.append(f"{column} NOT LIKE ?")
         params.append(f"%{ext}")
     return " AND ".join(conditions), params
+
+
+def video_include_sql(column: str = "file_path") -> tuple[str, list]:
+    """Return (sql_condition, params) that matches video files."""
+    conditions = []
+    params: list = []
+    for ext in sorted(VIDEO_EXTS):
+        conditions.append(f"{column} LIKE ?")
+        params.append(f"%{ext}")
+    return " OR ".join(conditions), params
 
 # ---------------------------------------------------------------------------
 # Path constants
@@ -71,22 +85,36 @@ _cuda_available_cached: bool | None = None
 # ---------------------------------------------------------------------------
 
 _prefetch_process: Optional[subprocess.Popen] = None
+_prefetch_log_fh = None
 _prefetch_lock = asyncio.Lock()
 
 _rescore_process: Optional[subprocess.Popen] = None
+_rescore_log_fh = None
 _rescore_lock = asyncio.Lock()
 
 _retrain_process: Optional[subprocess.Popen] = None
+_retrain_log_fh = None
 _retrain_lock = asyncio.Lock()
 
 _pack_process: Optional[subprocess.Popen] = None
+_pack_log_fh = None
 _pack_lock = asyncio.Lock()
 
 _vscore_process: Optional[subprocess.Popen] = None
+_vscore_log_fh = None
 _vscore_lock = asyncio.Lock()
 
 _tag_train_process: Optional[subprocess.Popen] = None
+_tag_train_log_fh = None
 _tag_train_lock = asyncio.Lock()
+
+# ---------------------------------------------------------------------------
+# Dedicated thread pool executors (isolate I/O, image, and DB work)
+# ---------------------------------------------------------------------------
+
+_image_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="img")
+_io_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="io")
+_db_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="db")
 
 # ---------------------------------------------------------------------------
 # Script & log path constants
@@ -133,7 +161,7 @@ _background_tasks: set = set()
 # Novel meta cache
 # ---------------------------------------------------------------------------
 
-_novel_meta_cache: dict = {}
+_novel_meta_cache: OrderedDict = OrderedDict()
 _NOVEL_CACHE_TTL = 300
 _NOVEL_CACHE_MAX = 2000
 

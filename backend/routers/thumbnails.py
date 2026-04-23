@@ -11,6 +11,8 @@ from utils import _range_file_response
 VIDEO_EXTS = state.VIDEO_EXTS
 THUMBS_DIR = state.THUMBS_DIR
 _safe_under_crawler = state._safe_under_crawler
+_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff", ".tif", ".avif"}
+_ARCHIVE_EXTS = {".zip", ".rar", ".7z", ".gz", ".tar", ".bz2"}
 
 router = APIRouter()
 
@@ -55,6 +57,9 @@ async def serve_thumbnail(file_path: str, request: Request):
         raise HTTPException(status_code=404, detail="File not found")
 
     ext = source_path.suffix.lower()
+    if ext in _ARCHIVE_EXTS or (ext not in _IMAGE_EXTS and ext not in VIDEO_EXTS):
+        raise HTTPException(status_code=404, detail="Unsupported file type for thumbnail")
+
     # Videos: serve directly with range support
     if ext in VIDEO_EXTS:
         return _range_file_response(source_path, request)
@@ -70,17 +75,18 @@ async def serve_thumbnail(file_path: str, request: Request):
 
     # Generate thumbnail in thread pool (non-blocking)
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         thumb_path = await loop.run_in_executor(
-            None, _generate_thumb, source_path, thumb_base
+            state._image_executor, _generate_thumb, source_path, thumb_base
         )
         return FileResponse(
             thumb_path,
             headers={"Cache-Control": "public, max-age=86400, immutable"},
         )
     except Exception:
-        # Fallback to original
-        return FileResponse(
-            source_path,
-            headers={"Cache-Control": "public, max-age=86400, immutable"},
-        )
+        if ext in _IMAGE_EXTS:
+            return FileResponse(
+                source_path,
+                headers={"Cache-Control": "public, max-age=86400, immutable"},
+            )
+        raise HTTPException(status_code=404, detail="Thumbnail generation failed")

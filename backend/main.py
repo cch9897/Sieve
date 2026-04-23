@@ -1,4 +1,6 @@
+import logging
 import os
+import sqlite3
 
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
@@ -14,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 
 import state
 from config import (
+    CANDIDATES_DB_PATH,
     CRAWLER_DIR,
     DB_PATH,
     HOST,
@@ -40,6 +43,14 @@ from routers import (
 )
 from utils import _range_file_response
 
+logger = logging.getLogger(__name__)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)-5s [%(name)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+
 FRONTEND_DIST = state.FRONTEND_DIST
 THUMBS_DIR = state.THUMBS_DIR
 _safe_under_crawler = state._safe_under_crawler
@@ -59,92 +70,97 @@ async def lifespan(app: FastAPI):
     # Pre-check CUDA availability at startup
     _check_cuda_available()
     if state._cuda_available_cached:
-        print(f"[inference] CUDA available: {_cuda_info()}")
+        logger.info("[inference] CUDA available: %s", _cuda_info())
     else:
-        print("[inference] CUDA not available, CPU only")
+        logger.info("[inference] CUDA not available, CPU only")
 
-    # Load preference models
+    # Load preference models (in thread to avoid blocking event loop)
     if PREFERENCE_MODEL_PATH.exists():
         try:
-            state._preference_model = joblib.load(PREFERENCE_MODEL_PATH)
-            print(f"[preference] XGBoost loaded: AUC={state._preference_model['auc']:.4f}, "
-                  f"vocab={len(state._preference_model['tag_vocab'])} tags")
+            import asyncio
+            state._preference_model = await asyncio.to_thread(joblib.load, PREFERENCE_MODEL_PATH)
+            logger.info("[preference] XGBoost loaded: AUC=%.4f, vocab=%d tags",
+                        state._preference_model['auc'], len(state._preference_model['tag_vocab']))
         except Exception as e:
-            print(f"[preference] Failed to load XGBoost: {e}")
+            logger.warning("[preference] Failed to load XGBoost: %s", e)
             state._preference_model = None
     else:
-        print(f"[preference] XGBoost not found at {PREFERENCE_MODEL_PATH}")
+        logger.info("[preference] XGBoost not found at %s", PREFERENCE_MODEL_PATH)
 
     # Models use lazy loading: only metadata is read at startup, weights loaded on first inference.
     state._inference_device = "cpu"
 
     # --- Auto-scan .pt model files from classifier/ (metadata only, no weight loading) ---
-    import glob as _glob
-    classifier_dir = PROJECT_ROOT / "classifier"
-    pt_files = sorted(_glob.glob(str(classifier_dir / "*.pt")))
-    pt_files = [f for f in pt_files if not f.endswith('.bak.pt')]
-    print(f"[models] Scanning {classifier_dir}: found {len(pt_files)} .pt files")
+    def _scan_pt_models():
+        import gc
+        import glob as _glob
+        classifier_dir = PROJECT_ROOT / "classifier"
+        pt_files = sorted(_glob.glob(str(classifier_dir / "*.pt")))
+        pt_files = [f for f in pt_files if not f.endswith('.bak.pt')]
+        logger.info("[models] Scanning %s: found %d .pt files", classifier_dir, len(pt_files))
 
-    for pt_path in pt_files:
-        pt_name = Path(pt_path).stem
-        try:
-            import torch
-            # Load only metadata (keys), not full tensors — use weights_only=False but
-            # we only read scalar metadata then discard the checkpoint immediately.
+        for pt_path in pt_files:
+            pt_name = Path(pt_path).stem
             try:
-                checkpoint = torch.load(pt_path, map_location="cpu", weights_only=True)
-            except Exception:
-                checkpoint = torch.load(pt_path, map_location="cpu", weights_only=False)
-            model_class = checkpoint.get('model_class', 'timm')
-            model_name = checkpoint.get('model_name', pt_name)
+                import torch
+                try:
+                    checkpoint = torch.load(pt_path, map_location="cpu", weights_only=True)
+                except Exception:
+                    checkpoint = torch.load(pt_path, map_location="cpu", weights_only=False)
+                model_class = checkpoint.get('model_class', 'timm')
+                model_name = checkpoint.get('model_name', pt_name)
 
-            if model_class == 'NaFlexClassifier':
-                num_features = checkpoint.get('num_features', 1152)
-                state._models[pt_name] = {
-                    'model': None, 'transform': None, 'processor': None,
-                    'type': 'siglip2',
-                    'cv_auc': checkpoint.get('cv_auc', 0),
-                    'n_samples': checkpoint.get('n_samples', 0),
-                    'model_name': model_name,
-                    'model_class': 'NaFlexClassifier',
-                    'input_size': 'variable',
-                    'num_features': num_features,
-                    'fold_aucs': checkpoint.get('fold_aucs', []),
-                    'max_num_patches': checkpoint.get('max_num_patches', 256),
-                    'source_file': Path(pt_path).name,
-                    '_pt_path': pt_path,
-                }
-                if state._active_model is None:
-                    state._active_model = pt_name
-                print(f"[models] Registered {pt_name}: {model_name} (NaFlexClassifier), AUC={checkpoint.get('cv_auc', 0):.4f} [lazy]")
+                if model_class == 'NaFlexClassifier':
+                    num_features = checkpoint.get('num_features', 1152)
+                    state._models[pt_name] = {
+                        'model': None, 'transform': None, 'processor': None,
+                        'type': 'siglip2',
+                        'cv_auc': checkpoint.get('cv_auc', 0),
+                        'n_samples': checkpoint.get('n_samples', 0),
+                        'model_name': model_name,
+                        'model_class': 'NaFlexClassifier',
+                        'input_size': 'variable',
+                        'num_features': num_features,
+                        'fold_aucs': checkpoint.get('fold_aucs', []),
+                        'max_num_patches': checkpoint.get('max_num_patches', 256),
+                        'source_file': Path(pt_path).name,
+                        '_pt_path': pt_path,
+                    }
+                    if state._active_model is None:
+                        state._active_model = pt_name
+                    logger.info("[models] Registered %s: %s (NaFlexClassifier), AUC=%.4f [lazy]",
+                                pt_name, model_name, checkpoint.get('cv_auc', 0))
 
-            elif model_class in ('PreferenceModel', 'timm'):
-                input_size = checkpoint.get('input_size', 224)
-                state._models[pt_name] = {
-                    'model': None, 'transform': None, 'processor': None,
-                    'type': 'timm',
-                    'cv_auc': checkpoint.get('cv_auc', 0),
-                    'n_samples': checkpoint.get('n_samples', 0),
-                    'model_name': model_name,
-                    'model_class': model_class,
-                    'input_size': input_size,
-                    'fold_aucs': checkpoint.get('fold_aucs', []),
-                    'source_file': Path(pt_path).name,
-                    '_pt_path': pt_path,
-                }
-                if state._active_model is None:
-                    state._active_model = pt_name
-                print(f"[models] Registered {pt_name}: {model_name} ({model_class}), AUC={checkpoint.get('cv_auc', 0):.4f} [lazy]")
-            else:
-                print(f"[models] Skipping {pt_name}: unknown model_class '{model_class}'")
+                elif model_class in ('PreferenceModel', 'timm'):
+                    input_size = checkpoint.get('input_size', 224)
+                    state._models[pt_name] = {
+                        'model': None, 'transform': None, 'processor': None,
+                        'type': 'timm',
+                        'cv_auc': checkpoint.get('cv_auc', 0),
+                        'n_samples': checkpoint.get('n_samples', 0),
+                        'model_name': model_name,
+                        'model_class': model_class,
+                        'input_size': input_size,
+                        'fold_aucs': checkpoint.get('fold_aucs', []),
+                        'source_file': Path(pt_path).name,
+                        '_pt_path': pt_path,
+                    }
+                    if state._active_model is None:
+                        state._active_model = pt_name
+                    logger.info("[models] Registered %s: %s (%s), AUC=%.4f [lazy]",
+                                pt_name, model_name, model_class, checkpoint.get('cv_auc', 0))
+                else:
+                    logger.warning("[models] Skipping %s: unknown model_class '%s'", pt_name, model_class)
 
-            del checkpoint  # free memory immediately
-        except Exception as e:
-            print(f"[models] Failed to scan {pt_name}: {e}")
+                del checkpoint
+            except Exception as e:
+                logger.warning("[models] Failed to scan %s: %s", pt_name, e)
 
-    import gc
-    gc.collect()
-    print(f"[models] Registered models: {list(state._models.keys())}, active: {state._active_model} (lazy loading enabled)")
+        gc.collect()
+        logger.info("[models] Registered models: %s, active: %s (lazy loading enabled)",
+                     list(state._models.keys()), state._active_model)
+
+    await asyncio.to_thread(_scan_pt_models)
 
     with get_sync_db(readonly=False) as conn:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_images_file_created_at ON images(file_path, created_at DESC)")
@@ -152,7 +168,35 @@ async def lifespan(app: FastAPI):
         conn.execute("CREATE INDEX IF NOT EXISTS idx_novels_file_created_at ON novels(file_path, created_at DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_novels_title_author ON novels(title, author)")
 
+    if CANDIDATES_DB_PATH.exists():
+        with sqlite3.connect(str(CANDIDATES_DB_PATH), timeout=30) as cconn:
+            cconn.execute("PRAGMA journal_mode=WAL")
+            cconn.execute("CREATE INDEX IF NOT EXISTS idx_candidates_status_score ON candidates(status, preference_score DESC)")
+
     yield
+    # Terminate any running subprocesses
+    for proc_attr, fh_attr in [
+        ('_prefetch_process', '_prefetch_log_fh'),
+        ('_rescore_process', '_rescore_log_fh'),
+        ('_retrain_process', '_retrain_log_fh'),
+        ('_pack_process', '_pack_log_fh'),
+        ('_vscore_process', '_vscore_log_fh'),
+        ('_tag_train_process', '_tag_train_log_fh'),
+    ]:
+        proc = getattr(state, proc_attr, None)
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        fh = getattr(state, fh_attr, None)
+        if fh and not fh.closed:
+            fh.close()
+
     if state._db_pool is not None:
         await state._db_pool.close()
         state._db_pool = None
@@ -165,6 +209,9 @@ async def lifespan(app: FastAPI):
     if state._danbooru_client is not None:
         await state._danbooru_client.aclose()
         state._danbooru_client = None
+
+    for executor in [state._image_executor, state._io_executor, state._db_executor]:
+        executor.shutdown(wait=False)
 
 
 app = FastAPI(title="Sieve", lifespan=lifespan)

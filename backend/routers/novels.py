@@ -4,6 +4,7 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
+import state
 from database import get_db
 from utils import _read_novel_meta, extract_date_from_path
 
@@ -50,15 +51,17 @@ async def list_novels(
     offset = (page - 1) * per_page
 
     if needs_meta_sort:
+        # Cap at 500 rows to avoid loading all metadata from disk
+        meta_sort_limit = 500
         sql = f"""SELECT id, source, source_id, title, author, file_path, url, created_at
-                  FROM novels WHERE {where} ORDER BY {order}"""
+                  FROM novels WHERE {where} ORDER BY {order} LIMIT {meta_sort_limit}"""
         async with db.execute(count_sql, params) as count_cursor, db.execute(sql, params) as list_cursor:
             total_row, rows = await count_cursor.fetchone(), await list_cursor.fetchall()
             total = total_row[0]
 
         loop = asyncio.get_running_loop()
         file_paths = [r["file_path"] for r in rows]
-        metas = await loop.run_in_executor(None, lambda: [_read_novel_meta(fp) for fp in file_paths])
+        metas = await loop.run_in_executor(state._io_executor, lambda: [_read_novel_meta(fp) for fp in file_paths])
 
         novels = []
         for r, meta in zip(rows, metas):
@@ -99,7 +102,7 @@ async def list_novels(
 
         loop = asyncio.get_running_loop()
         file_paths = [r["file_path"] for r in rows]
-        metas = await loop.run_in_executor(None, lambda: [_read_novel_meta(fp) for fp in file_paths])
+        metas = await loop.run_in_executor(state._io_executor, lambda: [_read_novel_meta(fp) for fp in file_paths])
 
         novels = []
         for r, meta in zip(rows, metas):
@@ -159,7 +162,7 @@ async def get_novel(novel_id: int):
 
     fp = row["file_path"]
     loop = asyncio.get_running_loop()
-    meta = await loop.run_in_executor(None, partial(_read_novel_meta, fp, include_text=True))
+    meta = await loop.run_in_executor(state._io_executor, partial(_read_novel_meta, fp, include_text=True))
 
     return {
         "id": row["id"],

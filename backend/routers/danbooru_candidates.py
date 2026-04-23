@@ -4,8 +4,8 @@ from typing import Optional
 
 from fastapi import APIRouter, Query
 
-from config import CANDIDATES_DB_PATH
-from database import get_danbooru_labels_db
+import state
+from config import CANDIDATES_DB_PATH, DANBOORU_LABELS_DB_PATH
 
 router = APIRouter()
 
@@ -21,20 +21,13 @@ async def danbooru_candidates_next(
     if not CANDIDATES_DB_PATH.exists():
         return {"image": None, "remaining": 0, "total_labeled": 0}
 
-    dldb = await get_danbooru_labels_db()
-    async with dldb.execute("SELECT image_id FROM labels") as c:
-        labeled_ids = {r[0] for r in await c.fetchall()}
-
     loop = asyncio.get_running_loop()
-
-    # Convert labeled_ids to a frozenset for the closure
-    _labeled_ids = frozenset(labeled_ids)
 
     def _query():
         conn = sqlite3.connect(str(CANDIDATES_DB_PATH), timeout=30)
+        conn.execute("ATTACH DATABASE ? AS dldb", (str(DANBOORU_LABELS_DB_PATH),))
         cur = conn.cursor()
 
-        # Build query — filter media type and already-labeled at SQL level
         where = ["status = 'pending'"]
         params_list: list = []
 
@@ -52,26 +45,21 @@ async def danbooru_candidates_next(
         elif media == "video":
             where.append("ext IN ('mp4', 'webm', 'zip')")
 
-        # Exclude already-labeled ids
-        if _labeled_ids:
-            for i in range(0, len(_labeled_ids), 900):
-                batch = list(_labeled_ids)[i:i+900]
-                placeholders = ",".join("?" * len(batch))
-                where.append(f"image_id NOT IN ({placeholders})")
-                params_list.extend(batch)
+        where.append("image_id NOT IN (SELECT image_id FROM dldb.labels)")
 
         where_str = " AND ".join(where)
         cur.execute(f"SELECT image_id, ext, score, rating, tags, preference_score, tag_score, cnn_score FROM candidates WHERE {where_str} ORDER BY preference_score DESC LIMIT 1", params_list)
         row = cur.fetchone()
 
-        # Count remaining
         cur.execute(f"SELECT COUNT(*) FROM candidates WHERE {where_str}", params_list)
         remaining = cur.fetchone()[0]
 
-        conn.close()
-        return row, remaining
+        total_labeled = conn.execute("SELECT COUNT(*) FROM dldb.labels").fetchone()[0]
 
-    row, remaining = await loop.run_in_executor(None, _query)
+        conn.close()
+        return row, remaining, total_labeled
+
+    row, remaining, total_labeled = await loop.run_in_executor(state._db_executor, _query)
 
     if row:
         img_id, ext, score, img_rating, tags_str, pref_score, tag_sc, cnn_sc = row
@@ -100,10 +88,10 @@ async def danbooru_candidates_next(
                 "aesthetic_score": float(cnn_sc) if cnn_sc is not None else None,
             },
             "remaining": remaining,
-            "total_labeled": len(labeled_ids),
+            "total_labeled": total_labeled,
         }
 
-    return {"image": None, "remaining": 0, "total_labeled": len(labeled_ids)}
+    return {"image": None, "remaining": 0, "total_labeled": total_labeled}
 
 
 @router.post("/api/danbooru/candidates/{image_id}/mark")
@@ -119,7 +107,7 @@ async def danbooru_candidates_mark(image_id: int):
         conn.execute("UPDATE candidates SET status='labeled' WHERE image_id=?", (image_id,))
         conn.commit()
         conn.close()
-    await loop.run_in_executor(None, _mark)
+    await loop.run_in_executor(state._db_executor, _mark)
     return {"ok": True}
 
 
@@ -145,5 +133,5 @@ async def danbooru_candidates_clear():
         conn.commit()
         conn.close()
         return count
-    deleted = await loop.run_in_executor(None, _clear)
+    deleted = await loop.run_in_executor(state._db_executor, _clear)
     return {"ok": True, "deleted": deleted}

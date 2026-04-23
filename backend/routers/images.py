@@ -9,8 +9,7 @@ from utils import _fetch_all_vision_scores, extract_date_from_path
 
 VIDEO_EXTS = state.VIDEO_EXTS
 _video_exclude_sql, _video_exclude_params = state.video_filter_sql()
-_video_include_parts = " OR ".join("file_path LIKE ?" for _ in sorted(VIDEO_EXTS))
-_video_include_params = [f"%{ext}" for ext in sorted(VIDEO_EXTS)]
+_video_include_parts, _video_include_params = state.video_include_sql()
 
 router = APIRouter()
 

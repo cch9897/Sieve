@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { fetchNovels, fetchNovelDates } from '../api'
 import Pagination from './Pagination'
 import type { NovelItem } from '../types'
 import EmptyState from './EmptyState'
+import { formatNum } from '../utils'
 
 interface NovelListProps {
   onNovelSelect: (novel: NovelItem) => void
@@ -61,10 +62,14 @@ export default function NovelList({
     loadNovels()
   }, [loadNovels])
 
+  const hasRestoredRef = useRef(false)
   useEffect(() => {
-    if (!initialNovelId || novels.length === 0) return
+    if (hasRestoredRef.current || !initialNovelId || novels.length === 0) return
     const found = novels.find(n => n.id === initialNovelId)
-    if (found) onNovelSelect(found)
+    if (found) {
+      hasRestoredRef.current = true
+      onNovelSelect(found)
+    }
   }, [initialNovelId, novels, onNovelSelect])
 
   const handleSearch = (e: React.FormEvent) => {
@@ -79,27 +84,22 @@ export default function NovelList({
     setPage(1)
   }
 
-  const formatNum = (n: number) => {
-    if (n >= 10000) return (n / 10000).toFixed(1) + '万'
-    if (n >= 1000) return (n / 1000).toFixed(1) + 'k'
-    return String(n)
-  }
-
   return (
     <div className="mx-auto max-w-5xl px-4 py-6 pb-24 md:pb-6">
-      <div className="mb-6 rounded-2xl border border-dark-700/60 bg-dark-900/70 p-4 shadow-sm">
+      <div className="mb-6 editorial-panel p-4">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
           <div className="space-y-1">
-            <h2 className="text-lg font-semibold text-dark-100">小说库</h2>
-            <p className="text-sm text-dark-500">支持按标题、作者、日期和热度快速挑文。</p>
+            <h2 className="text-lg font-semibold text-[var(--text)]">小说库</h2>
+            <p className="text-sm text-[var(--muted)]">支持按标题、作者、日期和热度快速挑文。</p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 text-xs text-dark-500">
-            <span className="rounded-full border border-dark-800 bg-dark-950 px-2.5 py-1">共 {total} 篇</span>
+          <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--muted)]">
+            <span className="rounded-full border border-[var(--line)] bg-[var(--panel-strong)] px-2.5 py-1">共 {total} 篇</span>
             {search && (
               <button
                 onClick={clearSearch}
-                className="inline-flex items-center gap-1 rounded-full border border-dark-800 bg-dark-950 px-2.5 py-1 transition-colors hover:border-dark-600 hover:text-dark-300"
+                aria-label="清除搜索"
+                className="inline-flex items-center gap-1 rounded-full border border-[var(--line)] bg-[var(--panel-strong)] px-2.5 py-1 transition-colors hover:border-[var(--line-strong)] hover:text-[var(--text)]/80"
               >
                 搜索：{search} ✕
               </button>
@@ -107,7 +107,7 @@ export default function NovelList({
             {selectedDate && (
               <button
                 onClick={() => { setSelectedDate(''); setPage(1) }}
-                className="inline-flex items-center gap-1 rounded-full border border-dark-800 bg-dark-950 px-2.5 py-1 transition-colors hover:border-dark-600 hover:text-dark-300"
+                className="inline-flex items-center gap-1 rounded-full border border-[var(--line)] bg-[var(--panel-strong)] px-2.5 py-1 transition-colors hover:border-[var(--line-strong)] hover:text-[var(--text)]/80"
               >
                 {selectedDate} ✕
               </button>
@@ -122,11 +122,12 @@ export default function NovelList({
               value={searchInput}
               onChange={e => setSearchInput(e.target.value)}
               placeholder="搜标题、作者、系列……"
-              className="w-full rounded-xl border border-dark-700 bg-dark-950 px-3 py-2 text-sm text-dark-100 outline-none transition-colors focus:border-dark-500 placeholder:text-dark-600"
+              aria-label="搜索小说"
+              className="w-full rounded-ed-sm border-[var(--input-border)] bg-[var(--input-bg)] px-3 py-2 text-sm text-[var(--text)] outline-none transition-colors focus:border-[var(--input-focus)] placeholder:text-[var(--muted)]/50"
             />
             <button
               type="submit"
-              className="rounded-xl bg-dark-700 px-4 py-2 text-sm text-dark-100 transition-colors hover:bg-dark-600"
+              className="rounded-ed-sm bg-[rgba(255,255,255,0.06)] px-4 py-2 text-sm text-[var(--text)] transition-colors hover:bg-[rgba(255,255,255,0.1)]"
             >
               搜索
             </button>
@@ -135,7 +136,7 @@ export default function NovelList({
           <select
             value={selectedDate}
             onChange={e => { setSelectedDate(e.target.value); setPage(1) }}
-            className="rounded-xl border border-dark-700 bg-dark-950 px-3 py-2 text-sm text-dark-100 outline-none transition-colors focus:border-dark-500"
+            className="rounded-ed-sm border-[var(--input-border)] bg-[var(--input-bg)] px-3 py-2 text-sm text-[var(--text)] outline-none transition-colors focus:border-[var(--input-focus)]"
           >
             <option value="">全部日期</option>
             {dates.map(d => (<option key={d} value={d}>{d}</option>))}
@@ -144,7 +145,7 @@ export default function NovelList({
           <select
             value={sort}
             onChange={e => { setSort(e.target.value); setPage(1) }}
-            className="rounded-xl border border-dark-700 bg-dark-950 px-3 py-2 text-sm text-dark-100 outline-none transition-colors focus:border-dark-500"
+            className="rounded-ed-sm border-[var(--input-border)] bg-[var(--input-bg)] px-3 py-2 text-sm text-[var(--text)] outline-none transition-colors focus:border-[var(--input-focus)]"
           >
             <option value="newest">最新</option>
             <option value="oldest">最早</option>
@@ -158,7 +159,7 @@ export default function NovelList({
       {loading ? (
         <div className="grid gap-3">
           {Array.from({ length: 6 }).map((_, i) => (
-            <div key={i} className="h-32 animate-pulse rounded-2xl border border-dark-700/50 bg-dark-900" />
+            <div key={i} className="h-32 animate-pulse rounded-ed-md border border-[var(--line)]" />
           ))}
         </div>
       ) : novels.length === 0 ? (
@@ -172,35 +173,39 @@ export default function NovelList({
             <article
               key={novel.id}
               onClick={() => onNovelSelect(novel)}
-              className="group cursor-pointer rounded-2xl border border-dark-700/50 bg-dark-900/80 p-4 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-dark-500/60 hover:bg-dark-900 active:scale-[0.995]"
+              onKeyDown={e => { if (e.key === 'Enter') onNovelSelect(novel) }}
+              tabIndex={0}
+              role="button"
+              aria-label={`打开小说：${novel.title}`}
+              className="group cursor-pointer editorial-panel p-4 transition-transform-colors duration-200 hover:-translate-y-0.5 hover:border-[var(--line-strong)] active:scale-[0.995]"
             >
               <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
-                    {novel.r18 && <span className="rounded-full bg-rose-500/15 px-2 py-0.5 text-[11px] text-rose-200">R18</span>}
-                    {novel.series_title && <span className="rounded-full bg-dark-800 px-2 py-0.5 text-[11px] text-dark-400">系列</span>}
+                    {novel.r18 && <span className="rounded-full bg-[var(--danger-soft)] px-2 py-0.5 text-[11px] text-[var(--danger)]">R18</span>}
+                    {novel.series_title && <span className="rounded-full bg-[rgba(255,255,255,0.05)] px-2 py-0.5 text-[11px] text-[var(--muted)]">系列</span>}
                   </div>
 
-                  <h3 className="mt-2 text-base font-medium leading-relaxed text-dark-100 group-hover:text-white line-clamp-2">
+                  <h3 className="mt-2 text-base font-medium leading-relaxed text-[var(--text)] group-hover:text-[var(--text)] line-clamp-2">
                     {novel.title}
                   </h3>
 
-                  <div className="mt-2 flex flex-wrap items-center gap-3 text-sm text-dark-400">
+                  <div className="mt-2 flex flex-wrap items-center gap-3 text-sm text-[var(--muted)]">
                     <span>✏️ {novel.author || '未知作者'}</span>
                     {novel.series_title && (
-                      <span className="truncate text-dark-500">📚 {novel.series_title}</span>
+                      <span className="truncate text-[var(--muted)]">📚 {novel.series_title}</span>
                     )}
-                    {novel.date && <span className="text-dark-500">🗓 {novel.date}</span>}
+                    {novel.date && <span className="text-[var(--muted)]">🗓 {novel.date}</span>}
                   </div>
 
                   <div className="mt-3 flex flex-wrap gap-1.5">
                     {novel.tags.slice(0, 6).map((tag, i) => (
-                      <span key={i} className="rounded-full border border-dark-700/70 bg-dark-950 px-2 py-0.5 text-[11px] text-dark-400">
+                      <span key={i} className="rounded-full border border-[var(--line)] bg-[rgba(0,0,0,0.16)] px-2 py-0.5 text-[11px] text-[var(--muted)]">
                         {tag}
                       </span>
                     ))}
                     {novel.tags.length > 6 && (
-                      <span className="rounded-full border border-dark-700/70 bg-dark-950 px-2 py-0.5 text-[11px] text-dark-500">+{novel.tags.length - 6}</span>
+                      <span className="rounded-full border border-[var(--line)] bg-[rgba(0,0,0,0.16)] px-2 py-0.5 text-[11px] text-[var(--muted)]">+{novel.tags.length - 6}</span>
                     )}
                   </div>
                 </div>
@@ -223,9 +228,9 @@ export default function NovelList({
 
 function MetricCard({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-xl border border-dark-700/50 bg-dark-950/80 px-3 py-2 text-center">
-      <div className="text-sm font-medium text-dark-100">{value}</div>
-      <div className="mt-1 text-[11px] text-dark-500">{label}</div>
+    <div className="rounded-ed-md border border-[var(--line)] bg-[rgba(0,0,0,0.16)] px-3 py-2 text-center">
+      <div className="text-sm font-medium text-[var(--text)]">{value}</div>
+      <div className="mt-1 text-[11px] text-[var(--muted)]">{label}</div>
     </div>
   )
 }

@@ -4,6 +4,19 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
+  build: {
+    target: 'es2022',
+    sourcemap: 'hidden',
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'vendor-react': ['react', 'react-dom'],
+          'vendor-sanitize': ['dompurify'],
+        },
+        chunkFileNames: 'assets/[name]-[hash].js',
+      },
+    },
+  },
   server: {
     port: 5173,
     proxy: {

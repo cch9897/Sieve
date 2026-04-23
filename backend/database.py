@@ -5,6 +5,7 @@ and the shared httpx client for DanbooruFinder API.
 """
 
 import asyncio
+import logging
 import sqlite3
 
 import aiosqlite
@@ -13,7 +14,11 @@ import httpx
 import config
 import state
 
+logger = logging.getLogger(__name__)
+
 _db_lock = asyncio.Lock()
+_labels_lock = asyncio.Lock()
+_danbooru_labels_lock = asyncio.Lock()
 
 # ---------------------------------------------------------------------------
 # Main crawler DB pool (singleton, read-only)
@@ -29,6 +34,7 @@ async def get_db() -> aiosqlite.Connection:
                 await state._db_pool.execute("PRAGMA temp_store = MEMORY")
                 await state._db_pool.execute("PRAGMA cache_size = -20000")
                 await state._db_pool.execute("PRAGMA mmap_size = 268435456")
+                await state._db_pool.execute("PRAGMA busy_timeout = 30000")
     return state._db_pool
 
 
@@ -76,7 +82,7 @@ def _init_labels_db():
         ddl = row[0] or ""
         # Old format: image_id INTEGER PRIMARY KEY (no composite key)
         if "PRIMARY KEY (image_id, model_name)" not in ddl:
-            print("[db] Migrating vision_scores to multi-model format...")
+            logger.info("[db] Migrating vision_scores to multi-model format...")
             conn.execute("ALTER TABLE vision_scores RENAME TO vision_scores_old")
             conn.execute("""
                 CREATE TABLE vision_scores (
@@ -92,7 +98,7 @@ def _init_labels_db():
                 SELECT image_id, 'default', score, scored_at FROM vision_scores_old
             """)
             conn.execute("DROP TABLE vision_scores_old")
-            print("[db] Migration complete.")
+            logger.info("[db] Migration complete.")
     else:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS vision_scores (
@@ -105,6 +111,7 @@ def _init_labels_db():
         """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_vision_scores_score ON vision_scores(score DESC)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_vision_scores_model ON vision_scores(model_name)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_vision_scores_model_score ON vision_scores(model_name, score)")
     conn.commit()
     conn.close()
 
@@ -113,16 +120,24 @@ def get_labels_db():
     conn = sqlite3.connect(str(config.LABELS_DB_PATH))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
     return conn
 
 
 async def get_labels_db_async() -> aiosqlite.Connection:
     if state._labels_pool is None:
-        async with _db_lock:
+        async with _labels_lock:
             if state._labels_pool is None:
                 state._labels_pool = await aiosqlite.connect(str(config.LABELS_DB_PATH))
                 state._labels_pool.row_factory = aiosqlite.Row
                 await state._labels_pool.execute("PRAGMA journal_mode=WAL")
+                await state._labels_pool.execute("PRAGMA busy_timeout = 30000")
+                await state._labels_pool.execute("PRAGMA cache_size = -20000")
+                await state._labels_pool.execute("PRAGMA mmap_size = 268435456")
+                await state._labels_pool.execute(
+                    "ATTACH DATABASE ? AS main_db",
+                    [f"file:{config.DB_PATH}?mode=ro"],
+                )
     return state._labels_pool
 
 
@@ -187,11 +202,14 @@ def _init_danbooru_labels_db():
 
 async def get_danbooru_labels_db() -> aiosqlite.Connection:
     if state._danbooru_labels_pool is None:
-        async with _db_lock:
+        async with _danbooru_labels_lock:
             if state._danbooru_labels_pool is None:
                 state._danbooru_labels_pool = await aiosqlite.connect(str(config.DANBOORU_LABELS_DB_PATH))
                 state._danbooru_labels_pool.row_factory = aiosqlite.Row
                 await state._danbooru_labels_pool.execute("PRAGMA journal_mode=WAL")
+                await state._danbooru_labels_pool.execute("PRAGMA busy_timeout = 30000")
+                await state._danbooru_labels_pool.execute("PRAGMA cache_size = -20000")
+                await state._danbooru_labels_pool.execute("PRAGMA mmap_size = 268435456")
     return state._danbooru_labels_pool
 
 

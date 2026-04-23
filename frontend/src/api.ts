@@ -1,6 +1,7 @@
 import type { ImageListResponse, ImageDetail, Stats, NovelListResponse, NovelDetail } from './types'
 
 const BASE = ''
+const DEFAULT_TIMEOUT = 30_000
 
 class ApiError extends Error {
   constructor(public status: number, message: string) {
@@ -8,12 +9,54 @@ class ApiError extends Error {
   }
 }
 
-async function apiFetch<T>(url: string): Promise<T> {
-  const res = await fetch(url)
-  if (!res.ok) {
-    throw new ApiError(res.status, `Request failed: ${res.statusText}`)
+function buildQuery(params: Record<string, string | number | undefined>): string {
+  const sp = new URLSearchParams()
+  for (const [key, val] of Object.entries(params)) {
+    if (val !== undefined && val !== '') {
+      sp.set(key, String(val))
+    }
   }
-  return res.json()
+  return sp.toString()
+}
+
+const inFlightRequests = new Map<string, Promise<unknown>>()
+
+function dedup<T>(key: string, factory: () => Promise<T>): Promise<T> {
+  const existing = inFlightRequests.get(key)
+  if (existing) return existing as Promise<T>
+  const promise = factory().finally(() => inFlightRequests.delete(key))
+  inFlightRequests.set(key, promise)
+  return promise
+}
+
+async function apiFetch<T>(url: string, signal?: AbortSignal): Promise<T> {
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT)
+
+  if (signal) {
+    signal.addEventListener('abort', () => controller.abort(), { once: true })
+  }
+
+  try {
+    const res = await fetch(url, { signal: controller.signal })
+    if (!res.ok) {
+      let message = `Request failed: ${res.statusText}`
+      try {
+        const data = await res.json()
+        if (data.detail) message = data.detail
+      } catch { /* ignore non-JSON error body */ }
+      throw new ApiError(res.status, message)
+    }
+    return res.json()
+  } catch (e) {
+    if (e instanceof DOMException && e.name === 'AbortError') {
+      throw e
+    }
+    if (e instanceof ApiError) throw e
+    throw new ApiError(0, e instanceof Error ? e.message : 'Network error')
+  } finally {
+    clearTimeout(timeoutId)
+  }
 }
 
 export async function fetchImages(params: {
@@ -23,31 +66,25 @@ export async function fetchImages(params: {
   sort?: string
   page?: number
   per_page?: number
-}): Promise<ImageListResponse> {
-  const sp = new URLSearchParams()
-  if (params.source) sp.set('source', params.source)
-  if (params.date) sp.set('date', params.date)
-  if (params.media) sp.set('media', params.media)
-  if (params.sort) sp.set('sort', params.sort)
-  if (params.page) sp.set('page', String(params.page))
-  if (params.per_page) sp.set('per_page', String(params.per_page))
-  return apiFetch(`${BASE}/api/images?${sp}`)
+}, signal?: AbortSignal): Promise<ImageListResponse> {
+  const qs = buildQuery(params as Record<string, string | number | undefined>)
+  return apiFetch(`${BASE}/api/images?${qs}`, signal)
 }
 
-export async function fetchImageDetail(id: number): Promise<ImageDetail> {
-  return apiFetch(`${BASE}/api/images/${id}`)
+export async function fetchImageDetail(id: number, signal?: AbortSignal): Promise<ImageDetail> {
+  return apiFetch(`${BASE}/api/images/${id}`, signal)
 }
 
-export async function fetchStats(): Promise<Stats> {
-  return apiFetch(`${BASE}/api/stats`)
+export async function fetchStats(signal?: AbortSignal): Promise<Stats> {
+  return dedup('stats', () => apiFetch(`${BASE}/api/stats`, signal))
 }
 
-export async function fetchDates(): Promise<{ dates: string[] }> {
-  return apiFetch(`${BASE}/api/dates`)
+export async function fetchDates(signal?: AbortSignal): Promise<{ dates: string[] }> {
+  return dedup('dates', () => apiFetch(`${BASE}/api/dates`, signal))
 }
 
-export async function fetchSources(): Promise<{ sources: string[], counts: Record<string, number> }> {
-  return apiFetch(`${BASE}/api/sources`)
+export async function fetchSources(signal?: AbortSignal): Promise<{ sources: string[], counts: Record<string, number> }> {
+  return dedup('sources', () => apiFetch(`${BASE}/api/sources`, signal))
 }
 
 // Novel APIs
@@ -57,22 +94,17 @@ export async function fetchNovels(params: {
   search?: string
   page?: number
   per_page?: number
-}): Promise<NovelListResponse> {
-  const sp = new URLSearchParams()
-  if (params.date) sp.set('date', params.date)
-  if (params.sort) sp.set('sort', params.sort)
-  if (params.search) sp.set('search', params.search)
-  if (params.page) sp.set('page', String(params.page))
-  if (params.per_page) sp.set('per_page', String(params.per_page))
-  return apiFetch(`${BASE}/api/novels?${sp}`)
+}, signal?: AbortSignal): Promise<NovelListResponse> {
+  const qs = buildQuery(params as Record<string, string | number | undefined>)
+  return apiFetch(`${BASE}/api/novels?${qs}`, signal)
 }
 
-export async function fetchNovelDetail(id: number): Promise<NovelDetail> {
-  return apiFetch(`${BASE}/api/novels/${id}`)
+export async function fetchNovelDetail(id: number, signal?: AbortSignal): Promise<NovelDetail> {
+  return apiFetch(`${BASE}/api/novels/${id}`, signal)
 }
 
-export async function fetchNovelDates(): Promise<{ dates: string[] }> {
-  return apiFetch(`${BASE}/api/novels/dates`)
+export async function fetchNovelDates(signal?: AbortSignal): Promise<{ dates: string[] }> {
+  return dedup('novel-dates', () => apiFetch(`${BASE}/api/novels/dates`, signal))
 }
 
 // Labeler APIs
@@ -88,6 +120,7 @@ export interface LabelerNextResponse {
     is_video: boolean
     thumb_url: string
     vision_score: number | null
+    vision_scores?: Record<string, number>
   } | null
   remaining: number
   total_labeled: number
@@ -134,12 +167,9 @@ export interface LabelerHistoryResponse {
 export async function fetchLabelerNext(params?: {
   source?: string
   media?: string
-}): Promise<LabelerNextResponse> {
-  const sp = new URLSearchParams()
-  if (params?.source) sp.set('source', params.source)
-  if (params?.media) sp.set('media', params.media)
-  const qs = sp.toString()
-  return apiFetch(`${BASE}/api/labeler/next${qs ? '?' + qs : ''}`)
+}, signal?: AbortSignal): Promise<LabelerNextResponse> {
+  const qs = buildQuery(params as Record<string, string | number | undefined>)
+  return apiFetch(`${BASE}/api/labeler/next${qs ? '?' + qs : ''}`, signal)
 }
 
 export async function labelImage(imageId: number, verdict: string, tags: string[] = []): Promise<{ ok: boolean }> {
@@ -158,8 +188,8 @@ export async function unlabelImage(imageId: number): Promise<{ ok: boolean }> {
   return res.json()
 }
 
-export async function fetchLabelerStats(): Promise<LabelerStats> {
-  return apiFetch(`${BASE}/api/labeler/stats`)
+export async function fetchLabelerStats(signal?: AbortSignal): Promise<LabelerStats> {
+  return dedup('labeler-stats', () => apiFetch(`${BASE}/api/labeler/stats`, signal))
 }
 
 export async function fetchLabelerHistory(params?: {
@@ -167,13 +197,9 @@ export async function fetchLabelerHistory(params?: {
   tag?: string
   page?: number
   per_page?: number
-}): Promise<LabelerHistoryResponse> {
-  const sp = new URLSearchParams()
-  if (params?.verdict) sp.set('verdict', params.verdict)
-  if (params?.tag) sp.set('tag', params.tag)
-  if (params?.page) sp.set('page', String(params.page))
-  if (params?.per_page) sp.set('per_page', String(params.per_page))
-  return apiFetch(`${BASE}/api/labeler/history?${sp}`)
+}, signal?: AbortSignal): Promise<LabelerHistoryResponse> {
+  const qs = buildQuery(params as Record<string, string | number | undefined>)
+  return apiFetch(`${BASE}/api/labeler/history?${qs}`, signal)
 }
 
 export function getExportUrl(verdict = 'liked', tag?: string, maxSize?: number): string {
@@ -200,6 +226,9 @@ export interface DanbooruImage {
   thumb_url: string
   preview_url: string
   video_url: string | null
+  preference_score?: number
+  aesthetic_score?: number
+  tag_score?: number
 }
 
 export interface DanbooruLabelerNextResponse {
@@ -250,13 +279,9 @@ export async function fetchDanbooruLabelerNext(params?: {
   rating?: string
   min_score?: number
   media?: string
-}): Promise<DanbooruLabelerNextResponse> {
-  const sp = new URLSearchParams()
-  if (params?.rating) sp.set('rating', params.rating)
-  if (params?.min_score !== undefined) sp.set('min_score', String(params.min_score))
-  if (params?.media) sp.set('media', params.media)
-  const qs = sp.toString()
-  return apiFetch(`${BASE}/api/danbooru/labeler/next${qs ? '?' + qs : ''}`)
+}, signal?: AbortSignal): Promise<DanbooruLabelerNextResponse> {
+  const qs = buildQuery(params as Record<string, string | number | undefined>)
+  return apiFetch(`${BASE}/api/danbooru/labeler/next${qs ? '?' + qs : ''}`, signal)
 }
 
 export async function danbooruLabelImage(
@@ -287,8 +312,8 @@ export async function danbooruUnlabelImage(imageId: number): Promise<{ ok: boole
   return res.json()
 }
 
-export async function fetchDanbooruLabelerStats(): Promise<DanbooruLabelerStats> {
-  return apiFetch(`${BASE}/api/danbooru/labeler/stats`)
+export async function fetchDanbooruLabelerStats(signal?: AbortSignal): Promise<DanbooruLabelerStats> {
+  return dedup('danbooru-labeler-stats', () => apiFetch(`${BASE}/api/danbooru/labeler/stats`, signal))
 }
 
 export async function fetchDanbooruLabelerHistory(params?: {
@@ -296,13 +321,9 @@ export async function fetchDanbooruLabelerHistory(params?: {
   tag?: string
   page?: number
   per_page?: number
-}): Promise<DanbooruLabelerHistoryResponse> {
-  const sp = new URLSearchParams()
-  if (params?.verdict) sp.set('verdict', params.verdict)
-  if (params?.tag) sp.set('tag', params.tag)
-  if (params?.page) sp.set('page', String(params.page))
-  if (params?.per_page) sp.set('per_page', String(params.per_page))
-  return apiFetch(`${BASE}/api/danbooru/labeler/history?${sp}`)
+}, signal?: AbortSignal): Promise<DanbooruLabelerHistoryResponse> {
+  const qs = buildQuery(params as Record<string, string | number | undefined>)
+  return apiFetch(`${BASE}/api/danbooru/labeler/history?${qs}`, signal)
 }
 
 // AI Recommended
@@ -320,13 +341,9 @@ export async function fetchDanbooruRecommended(params: {
   per_page?: number
   min_score?: number
   rating?: string
-}): Promise<DanbooruRecommendedResponse> {
-  const sp = new URLSearchParams()
-  if (params.page) sp.set('page', String(params.page))
-  if (params.per_page) sp.set('per_page', String(params.per_page))
-  if (params.min_score !== undefined) sp.set('min_score', String(params.min_score))
-  if (params.rating) sp.set('rating', params.rating)
-  return apiFetch(`${BASE}/api/danbooru/recommended?${sp}`)
+}, signal?: AbortSignal): Promise<DanbooruRecommendedResponse> {
+  const qs = buildQuery(params as Record<string, string | number | undefined>)
+  return apiFetch(`${BASE}/api/danbooru/recommended?${qs}`, signal)
 }
 
 export interface HistogramBin {
@@ -367,8 +384,8 @@ export interface DanbooruCandidatesStats {
   vision_models?: Record<string, { model_class: string; cv_auc: number; type: string }>
 }
 
-export async function fetchDanbooruCandidatesStats(): Promise<DanbooruCandidatesStats> {
-  return apiFetch(`${BASE}/api/danbooru/candidates/stats`)
+export async function fetchDanbooruCandidatesStats(signal?: AbortSignal): Promise<DanbooruCandidatesStats> {
+  return apiFetch(`${BASE}/api/danbooru/candidates/stats`, signal)
 }
 
 export async function fetchDanbooruCandidateNext(params: {
@@ -376,17 +393,14 @@ export async function fetchDanbooruCandidateNext(params: {
   media?: string
   min_score?: number
   min_aes?: number
-}): Promise<DanbooruLabelerNextResponse> {
-  const sp = new URLSearchParams()
-  if (params.rating) sp.set('rating', params.rating)
-  if (params.media) sp.set('media', params.media)
-  if (params.min_score !== undefined) sp.set('min_score', String(params.min_score))
-  if (params.min_aes !== undefined) sp.set('min_aes', String(params.min_aes))
-  return apiFetch(`${BASE}/api/danbooru/candidates/next?${sp}`)
+}, signal?: AbortSignal): Promise<DanbooruLabelerNextResponse> {
+  const qs = buildQuery(params as Record<string, string | number | undefined>)
+  return apiFetch(`${BASE}/api/danbooru/candidates/next?${qs}`, signal)
 }
 
 export async function markDanbooruCandidate(imageId: number): Promise<void> {
-  await fetch(`${BASE}/api/danbooru/candidates/${imageId}/mark`, { method: 'POST' })
+  const res = await fetch(`${BASE}/api/danbooru/candidates/${imageId}/mark`, { method: 'POST' })
+  if (!res.ok) throw new ApiError(res.status, 'Failed to mark candidate')
 }
 
 export async function clearDanbooruCandidates(): Promise<{ ok: boolean; deleted: number }> {
@@ -406,8 +420,8 @@ export async function startCandidatesRescore(): Promise<{ status: string; model?
   return res.json()
 }
 
-export async function fetchRescoreStatus(): Promise<RescoreStatus> {
-  return apiFetch(`${BASE}/api/danbooru/candidates/rescore/status`)
+export async function fetchRescoreStatus(signal?: AbortSignal): Promise<RescoreStatus> {
+  return apiFetch(`${BASE}/api/danbooru/candidates/rescore/status`, signal)
 }
 
 export async function stopCandidatesRescore(): Promise<{ stopped: boolean }> {
@@ -461,12 +475,12 @@ export interface AutoTagsBatchResponse {
   tags: Record<string, { top_tags: string; rating: string }>
 }
 
-export async function fetchAutoTags(imageId: number): Promise<AutoTagsDetail> {
-  return apiFetch(`${BASE}/api/autotags/${imageId}`)
+export async function fetchAutoTags(imageId: number, signal?: AbortSignal): Promise<AutoTagsDetail> {
+  return apiFetch(`${BASE}/api/autotags/${imageId}`, signal)
 }
 
-export async function fetchAutoTagsStats(): Promise<AutoTagsStats> {
-  return apiFetch(`${BASE}/api/autotags/stats`)
+export async function fetchAutoTagsStats(signal?: AbortSignal): Promise<AutoTagsStats> {
+  return dedup('autotags-stats', () => apiFetch(`${BASE}/api/autotags/stats`, signal))
 }
 
 export interface PrefetchStatus {
@@ -475,8 +489,8 @@ export interface PrefetchStatus {
   stopped?: boolean
 }
 
-export async function fetchPrefetchStatus(): Promise<PrefetchStatus> {
-  return apiFetch(`${BASE}/api/danbooru/prefetch/status`)
+export async function fetchPrefetchStatus(signal?: AbortSignal): Promise<PrefetchStatus> {
+  return apiFetch(`${BASE}/api/danbooru/prefetch/status`, signal)
 }
 
 export type PrefetchMode = 'tag+vision' | 'vision-only'
@@ -513,11 +527,17 @@ export interface GpuConfig {
 export interface GpuTestResult {
   ok: boolean
   error?: string
-  health?: Record<string, any>
+  health?: {
+    model_name?: string
+    device?: string
+    fp16?: boolean
+    cv_auc?: number
+    gpu_memory_mb?: number
+  }
 }
 
-export async function fetchGpuConfig(): Promise<GpuConfig> {
-  return apiFetch(`${BASE}/api/danbooru/gpu/config`)
+export async function fetchGpuConfig(signal?: AbortSignal): Promise<GpuConfig> {
+  return apiFetch(`${BASE}/api/danbooru/gpu/config`, signal)
 }
 
 export async function updateGpuConfig(cfg: Partial<{ url: string; batch_size: number; enabled: boolean }>): Promise<GpuConfig> {
@@ -563,8 +583,8 @@ export interface InferenceModeResponse {
   cuda_info: InferenceStatus['cuda_info']
 }
 
-export async function fetchInferenceStatus(): Promise<InferenceStatus> {
-  return apiFetch(`${BASE}/api/inference/status`)
+export async function fetchInferenceStatus(signal?: AbortSignal): Promise<InferenceStatus> {
+  return apiFetch(`${BASE}/api/inference/status`, signal)
 }
 
 export async function setInferenceMode(mode: InferenceMode): Promise<InferenceModeResponse> {
@@ -584,16 +604,20 @@ export async function searchByAutoTag(params: {
   tag: string
   page?: number
   per_page?: number
-}): Promise<AutoTagsSearchResponse> {
-  const sp = new URLSearchParams()
-  sp.set('tag', params.tag)
-  if (params.page) sp.set('page', String(params.page))
-  if (params.per_page) sp.set('per_page', String(params.per_page))
-  return apiFetch(`${BASE}/api/autotags/search?${sp}`)
+}, signal?: AbortSignal): Promise<AutoTagsSearchResponse> {
+  const qs = buildQuery(params as Record<string, string | number | undefined>)
+  return apiFetch(`${BASE}/api/autotags/search?${qs}`, signal)
 }
 
-export async function fetchAutoTagsBatch(ids: number[]): Promise<AutoTagsBatchResponse> {
-  return apiFetch(`${BASE}/api/autotags/batch?ids=${ids.join(',')}`)
+export async function fetchAutoTagsBatch(ids: number[], signal?: AbortSignal): Promise<AutoTagsBatchResponse> {
+  const res = await fetch(`${BASE}/api/autotags/batch`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids }),
+    signal,
+  })
+  if (!res.ok) throw new ApiError(res.status, `Request failed: ${res.statusText}`)
+  return res.json()
 }
 
 // ==========================================================================
@@ -631,8 +655,8 @@ export interface MLTaskStatus {
   log: string
 }
 
-export async function fetchMLModels(): Promise<MLModelsInfo> {
-  return apiFetch(`${BASE}/api/ml/models`)
+export async function fetchMLModels(signal?: AbortSignal): Promise<MLModelsInfo> {
+  return dedup('ml-models', () => apiFetch(`${BASE}/api/ml/models`, signal))
 }
 
 export async function startRetrainXGBoost(): Promise<{ status: string }> {
@@ -641,8 +665,8 @@ export async function startRetrainXGBoost(): Promise<{ status: string }> {
   return res.json()
 }
 
-export async function fetchRetrainStatus(): Promise<MLTaskStatus> {
-  return apiFetch(`${BASE}/api/ml/retrain-xgboost/status`)
+export async function fetchRetrainStatus(signal?: AbortSignal): Promise<MLTaskStatus> {
+  return apiFetch(`${BASE}/api/ml/retrain-xgboost/status`, signal)
 }
 
 export async function startPackDataset(maxSize?: number): Promise<{ status: string }> {
@@ -652,8 +676,8 @@ export async function startPackDataset(maxSize?: number): Promise<{ status: stri
   return res.json()
 }
 
-export async function fetchPackStatus(): Promise<MLTaskStatus> {
-  return apiFetch(`${BASE}/api/ml/pack-dataset/status`)
+export async function fetchPackStatus(signal?: AbortSignal): Promise<MLTaskStatus> {
+  return apiFetch(`${BASE}/api/ml/pack-dataset/status`, signal)
 }
 
 export async function startVisionScore(model?: string): Promise<{ status: string }> {
@@ -666,8 +690,8 @@ export async function startVisionScore(model?: string): Promise<{ status: string
   return res.json()
 }
 
-export async function fetchVisionScoreStatus(): Promise<MLTaskStatus> {
-  return apiFetch(`${BASE}/api/ml/vision-score/status`)
+export async function fetchVisionScoreStatus(signal?: AbortSignal): Promise<MLTaskStatus> {
+  return apiFetch(`${BASE}/api/ml/vision-score/status`, signal)
 }
 
 export async function startTagTrain(): Promise<{ status: string }> {
@@ -676,8 +700,8 @@ export async function startTagTrain(): Promise<{ status: string }> {
   return res.json()
 }
 
-export async function fetchTagTrainStatus(): Promise<MLTaskStatus> {
-  return apiFetch(`${BASE}/api/ml/tag-train/status`)
+export async function fetchTagTrainStatus(signal?: AbortSignal): Promise<MLTaskStatus> {
+  return apiFetch(`${BASE}/api/ml/tag-train/status`, signal)
 }
 
 // ==========================================================================
@@ -700,8 +724,8 @@ export interface ModelsResponse {
   active_model: string | null
 }
 
-export async function fetchVisionModels(): Promise<ModelsResponse> {
-  return apiFetch(`${BASE}/api/models`)
+export async function fetchVisionModels(signal?: AbortSignal): Promise<ModelsResponse> {
+  return dedup('vision-models', () => apiFetch(`${BASE}/api/models`, signal))
 }
 
 export async function setActiveModel(modelKey: string): Promise<{ active_model: string }> {
@@ -719,8 +743,8 @@ export interface VisionScoreCompare {
   scores: Record<string, { score: number; scored_at: string }>
 }
 
-export async function fetchVisionScoreCompare(imageId: number): Promise<VisionScoreCompare> {
-  return apiFetch(`${BASE}/api/vision-scores/compare?image_id=${imageId}`)
+export async function fetchVisionScoreCompare(imageId: number, signal?: AbortSignal): Promise<VisionScoreCompare> {
+  return apiFetch(`${BASE}/api/vision-scores/compare?image_id=${imageId}`, signal)
 }
 
 export interface CompareStatsResponse {
@@ -732,6 +756,6 @@ export interface CompareStatsResponse {
   }>
 }
 
-export async function fetchVisionScoreCompareStats(): Promise<CompareStatsResponse> {
-  return apiFetch(`${BASE}/api/vision-scores/compare-stats`)
+export async function fetchVisionScoreCompareStats(signal?: AbortSignal): Promise<CompareStatsResponse> {
+  return dedup('compare-stats', () => apiFetch(`${BASE}/api/vision-scores/compare-stats`, signal))
 }

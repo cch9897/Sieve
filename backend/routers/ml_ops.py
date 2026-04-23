@@ -25,6 +25,30 @@ from models import (
 router = APIRouter()
 
 
+def _close_log_fh(attr_name: str):
+    """Close a log file handle stored on state if it exists and is open."""
+    fh = getattr(state, attr_name, None)
+    if fh and not fh.closed:
+        fh.close()
+    setattr(state, attr_name, None)
+
+
+async def _read_log_tail(path: Path, max_bytes: int = 5000) -> str:
+    """Read the tail of a log file without blocking the event loop."""
+    def _read():
+        if not path.exists():
+            return ""
+        try:
+            with open(path, "rb") as f:
+                f.seek(0, 2)
+                size = f.tell()
+                f.seek(max(0, size - max_bytes))
+                return f.read().decode("utf-8", errors="replace")
+        except Exception:
+            return ""
+    return await asyncio.to_thread(_read)
+
+
 # ---------------------------------------------------------------------------
 # GPU Config
 # ---------------------------------------------------------------------------
@@ -160,6 +184,7 @@ def _is_prefetch_running() -> bool:
         if ret is None:
             return True
         state._prefetch_process = None
+        _close_log_fh('_prefetch_log_fh')
     try:
         result = subprocess.run(
             ["pgrep", "-f", "prefetch_candidates.py"],
@@ -185,10 +210,10 @@ async def prefetch_start(
 ):
     """Start the AI pre-screening process. mode: tag+vision or vision-only."""
     async with state._prefetch_lock:
-        if _is_prefetch_running():
+        if await asyncio.to_thread(_is_prefetch_running):
             return {"running": True, "message": "已在运行"}
         try:
-            _prefetch_log = open(Path(__file__).parent.parent / "prefetch.log", "a")
+            log_fh = open(Path(__file__).parent.parent / "prefetch.log", "a")
             _prefetch_env = os.environ.copy()
             _prefetch_env.update({
                 "OMP_NUM_THREADS": "6",
@@ -240,18 +265,23 @@ async def prefetch_start(
             state._prefetch_process = subprocess.Popen(
                 cmd,
                 cwd=str(state.PREFETCH_SCRIPT.parent),
-                stdout=_prefetch_log,
-                stderr=_prefetch_log,
+                stdout=log_fh,
+                stderr=log_fh,
                 start_new_session=True,
                 env=_prefetch_env,
             )
+            state._prefetch_log_fh = log_fh
             await asyncio.sleep(1.0)
             if state._prefetch_process.poll() is not None:
                 code = state._prefetch_process.returncode
                 state._prefetch_process = None
+                log_fh.close()
+                state._prefetch_log_fh = None
                 return {"running": False, "message": f"启动失败 (exit code {code})"}
             return {"running": True, "message": "已启动"}
         except Exception as e:
+            if 'log_fh' in locals() and not log_fh.closed:
+                log_fh.close()
             return {"running": False, "message": f"启动失败: {e}"}
 
 
@@ -263,7 +293,7 @@ async def prefetch_stop():
         if state._prefetch_process is not None and state._prefetch_process.poll() is None:
             try:
                 os.killpg(os.getpgid(state._prefetch_process.pid), signal.SIGTERM)
-                state._prefetch_process.wait(timeout=10)  # give time to save progress
+                await asyncio.to_thread(state._prefetch_process.wait, 10)
             except subprocess.TimeoutExpired:
                 try:
                     os.killpg(os.getpgid(state._prefetch_process.pid), signal.SIGKILL)
@@ -272,6 +302,9 @@ async def prefetch_stop():
             except Exception:
                 pass
             state._prefetch_process = None
+            if getattr(state, '_prefetch_log_fh', None) and not state._prefetch_log_fh.closed:
+                state._prefetch_log_fh.close()
+                state._prefetch_log_fh = None
             killed = True
         # Also kill any externally-started prefetch
         try:
@@ -301,6 +334,7 @@ def _is_rescore_running() -> bool:
         if ret is None:
             return True
         state._rescore_process = None
+        _close_log_fh('_rescore_log_fh')
     try:
         result = subprocess.run(
             ["pgrep", "-f", "prefetch_candidates.py.*--rescore"],
@@ -315,7 +349,7 @@ def _is_rescore_running() -> bool:
 async def candidates_rescore_start():
     """Re-score all pending candidates with the active vision model (GPU batch)."""
     async with state._rescore_lock:
-        if _is_rescore_running():
+        if await asyncio.to_thread(_is_rescore_running):
             return {"status": "already_running"}
         state.RESCORE_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(state.RESCORE_LOG_PATH, "w") as log_f:
@@ -350,16 +384,20 @@ async def candidates_rescore_start():
                 str(Path(__file__).parent.parent / "venv" / "bin" / "python"), "-u",
                 str(state.PREFETCH_SCRIPT), "--rescore",
             ]
+            log_fh = open(state.RESCORE_LOG_PATH, "a")
             state._rescore_process = subprocess.Popen(
                 cmd,
                 cwd=str(state.PREFETCH_SCRIPT.parent),
-                stdout=open(state.RESCORE_LOG_PATH, "a"),
+                stdout=log_fh,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
                 env=_rescore_env,
             )
+            state._rescore_log_fh = log_fh
             return {"status": "started", "model": model_key}
         except Exception as e:
+            if 'log_fh' in locals() and not log_fh.closed:
+                log_fh.close()
             return {"status": "failed", "error": str(e)}
 
 
@@ -367,13 +405,7 @@ async def candidates_rescore_start():
 async def candidates_rescore_status():
     """Get re-scoring status and log."""
     running = await asyncio.to_thread(_is_rescore_running)
-    log_content = ""
-    if state.RESCORE_LOG_PATH.exists():
-        try:
-            with open(state.RESCORE_LOG_PATH, "r") as f:
-                log_content = f.read()[-5000:]
-        except Exception:
-            pass
+    log_content = await _read_log_tail(state.RESCORE_LOG_PATH)
     return {"running": running, "log": log_content}
 
 
@@ -385,7 +417,7 @@ async def candidates_rescore_stop():
         if state._rescore_process is not None and state._rescore_process.poll() is None:
             try:
                 os.killpg(os.getpgid(state._rescore_process.pid), signal.SIGTERM)
-                state._rescore_process.wait(timeout=10)
+                await asyncio.to_thread(state._rescore_process.wait, 10)
             except subprocess.TimeoutExpired:
                 try:
                     os.killpg(os.getpgid(state._rescore_process.pid), signal.SIGKILL)
@@ -394,6 +426,9 @@ async def candidates_rescore_stop():
             except Exception:
                 pass
             state._rescore_process = None
+            if getattr(state, '_rescore_log_fh', None) and not state._rescore_log_fh.closed:
+                state._rescore_log_fh.close()
+                state._rescore_log_fh = None
             killed = True
         return {"stopped": killed}
 
@@ -455,6 +490,7 @@ def _is_retrain_running() -> bool:
         if ret is None:
             return True
         state._retrain_process = None
+        _close_log_fh('_retrain_log_fh')
     try:
         result = subprocess.run(
             ["pgrep", "-f", "retrain.sh"],
@@ -469,21 +505,25 @@ def _is_retrain_running() -> bool:
 async def ml_retrain_start():
     """Start XGBoost retraining."""
     async with state._retrain_lock:
-        if _is_retrain_running():
+        if await asyncio.to_thread(_is_retrain_running):
             return {"status": "already_running"}
         state.RETRAIN_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(state.RETRAIN_LOG_PATH, "w") as log_f:
             log_f.write(f"=== Retrain started at {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
         try:
+            log_fh = open(state.RETRAIN_LOG_PATH, "a")
             state._retrain_process = subprocess.Popen(
                 ["bash", str(state.RETRAIN_SCRIPT)],
                 cwd=str(state.RETRAIN_SCRIPT.parent),
-                stdout=open(state.RETRAIN_LOG_PATH, "a"),
+                stdout=log_fh,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
+            state._retrain_log_fh = log_fh
             return {"status": "started"}
         except Exception as e:
+            if 'log_fh' in locals() and not log_fh.closed:
+                log_fh.close()
             return {"status": "failed", "error": str(e)}
 
 
@@ -491,13 +531,7 @@ async def ml_retrain_start():
 async def ml_retrain_status():
     """Get retrain status and latest log."""
     running = await asyncio.to_thread(_is_retrain_running)
-    log_content = ""
-    if state.RETRAIN_LOG_PATH.exists():
-        try:
-            with open(state.RETRAIN_LOG_PATH, "r") as f:
-                log_content = f.read()[-5000:]  # Last 5KB
-        except Exception:
-            pass
+    log_content = await _read_log_tail(state.RETRAIN_LOG_PATH)
     if not running and state._retrain_process is not None:
         exit_code = state._retrain_process.poll()
         if exit_code == 0:
@@ -519,6 +553,7 @@ def _is_pack_running() -> bool:
         if ret is None:
             return True
         state._pack_process = None
+        _close_log_fh('_pack_log_fh')
     try:
         result = subprocess.run(
             ["pgrep", "-f", "pack_pipeline.sh"],
@@ -533,7 +568,7 @@ def _is_pack_running() -> bool:
 async def ml_pack_start(max_size: int = Query(1024, ge=0, le=4096)):
     """Start dataset packing. max_size=0 means original resolution."""
     async with state._pack_lock:
-        if _is_pack_running():
+        if await asyncio.to_thread(_is_pack_running):
             return {"status": "already_running"}
         state.PACK_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(state.PACK_LOG_PATH, "w") as log_f:
@@ -541,15 +576,19 @@ async def ml_pack_start(max_size: int = Query(1024, ge=0, le=4096)):
             log_f.write(f"=== Pack started at {time.strftime('%Y-%m-%d %H:%M:%S')} ({label}) ===\n")
         try:
             cmd = ["bash", str(state.PACK_SCRIPT), "--include-db", "--max-size", str(max_size)]
+            log_fh = open(state.PACK_LOG_PATH, "a")
             state._pack_process = subprocess.Popen(
                 cmd,
                 cwd=str(state.PACK_SCRIPT.parent),
-                stdout=open(state.PACK_LOG_PATH, "a"),
+                stdout=log_fh,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
+            state._pack_log_fh = log_fh
             return {"status": "started"}
         except Exception as e:
+            if 'log_fh' in locals() and not log_fh.closed:
+                log_fh.close()
             return {"status": "failed", "error": str(e)}
 
 
@@ -557,13 +596,7 @@ async def ml_pack_start(max_size: int = Query(1024, ge=0, le=4096)):
 async def ml_pack_status():
     """Get pack status and latest log."""
     running = await asyncio.to_thread(_is_pack_running)
-    log_content = ""
-    if state.PACK_LOG_PATH.exists():
-        try:
-            with open(state.PACK_LOG_PATH, "r") as f:
-                log_content = f.read()[-5000:]  # Last 5KB
-        except Exception:
-            pass
+    log_content = await _read_log_tail(state.PACK_LOG_PATH)
     if not running and state._pack_process is not None:
         exit_code = state._pack_process.poll()
         return {"running": False, "finished": True, "exit_code": exit_code, "log": log_content}
@@ -580,6 +613,7 @@ def _is_vscore_running() -> bool:
         if ret is None:
             return True
         state._vscore_process = None
+        _close_log_fh('_vscore_log_fh')
     try:
         result = subprocess.run(
             ["pgrep", "-f", "score_crawler.py"],
@@ -597,7 +631,7 @@ class VscoreStartRequest(BaseModel):
 async def ml_vscore_start(req: VscoreStartRequest = VscoreStartRequest()):
     """Start vision scoring of crawler images."""
     async with state._vscore_lock:
-        if _is_vscore_running():
+        if await asyncio.to_thread(_is_vscore_running):
             return {"status": "already_running"}
         state.VSCORE_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(state.VSCORE_LOG_PATH, "w") as log_f:
@@ -619,15 +653,19 @@ async def ml_vscore_start(req: VscoreStartRequest = VscoreStartRequest()):
                     cmd.extend(["--model", model_type])
             # else: default --model all
 
+            log_fh = open(state.VSCORE_LOG_PATH, "a")
             state._vscore_process = subprocess.Popen(
                 cmd,
                 cwd=str(state.VSCORE_SCRIPT.parent),
-                stdout=open(state.VSCORE_LOG_PATH, "a"),
+                stdout=log_fh,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
+            state._vscore_log_fh = log_fh
             return {"status": "started", "model": model_key}
         except Exception as e:
+            if 'log_fh' in locals() and not log_fh.closed:
+                log_fh.close()
             return {"status": "failed", "error": str(e)}
 
 
@@ -635,13 +673,7 @@ async def ml_vscore_start(req: VscoreStartRequest = VscoreStartRequest()):
 async def ml_vscore_status():
     """Get vision scoring status and latest log."""
     running = await asyncio.to_thread(_is_vscore_running)
-    log_content = ""
-    if state.VSCORE_LOG_PATH.exists():
-        try:
-            with open(state.VSCORE_LOG_PATH, "r") as f:
-                log_content = f.read()[-5000:]
-        except Exception:
-            pass
+    log_content = await _read_log_tail(state.VSCORE_LOG_PATH)
     if not running and state._vscore_process is not None:
         exit_code = state._vscore_process.poll()
         return {"running": False, "finished": True, "exit_code": exit_code, "log": log_content}
@@ -658,6 +690,7 @@ def _is_tag_train_running() -> bool:
         if ret is None:
             return True
         state._tag_train_process = None
+        _close_log_fh('_tag_train_log_fh')
     try:
         result = subprocess.run(
             ["pgrep", "-f", "tag_liked_t2i.py"],
@@ -672,22 +705,26 @@ def _is_tag_train_running() -> bool:
 async def ml_tag_train_start():
     """Start incremental sync + WD14 tagging for liked training set (GPU)."""
     async with state._tag_train_lock:
-        if _is_tag_train_running():
+        if await asyncio.to_thread(_is_tag_train_running):
             return {"status": "already_running"}
         state.TAG_TRAIN_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(state.TAG_TRAIN_LOG_PATH, "w") as log_f:
             log_f.write(f"=== Tag train started at {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
         try:
             venv_python = PROJECT_ROOT / "backend" / "venv" / "bin" / "python"
+            log_fh = open(state.TAG_TRAIN_LOG_PATH, "a")
             state._tag_train_process = subprocess.Popen(
                 [str(venv_python), str(state.TAG_TRAIN_SCRIPT)],
                 cwd=str(state.TAG_TRAIN_SCRIPT.parent),
-                stdout=open(state.TAG_TRAIN_LOG_PATH, "a"),
+                stdout=log_fh,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
+            state._tag_train_log_fh = log_fh
             return {"status": "started"}
         except Exception as e:
+            if 'log_fh' in locals() and not log_fh.closed:
+                log_fh.close()
             return {"status": "failed", "error": str(e)}
 
 
@@ -695,13 +732,7 @@ async def ml_tag_train_start():
 async def ml_tag_train_status():
     """Get tag-train status and latest log."""
     running = await asyncio.to_thread(_is_tag_train_running)
-    log_content = ""
-    if state.TAG_TRAIN_LOG_PATH.exists():
-        try:
-            with open(state.TAG_TRAIN_LOG_PATH, "r") as f:
-                log_content = f.read()[-5000:]
-        except Exception:
-            pass
+    log_content = await _read_log_tail(state.TAG_TRAIN_LOG_PATH)
     if not running and state._tag_train_process is not None:
         exit_code = state._tag_train_process.poll()
         return {"running": False, "finished": True, "exit_code": exit_code, "log": log_content}

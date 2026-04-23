@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, memo } from 'react'
 import type { ImageItem } from '../types'
 import EmptyState from './EmptyState'
 import { getSourceMeta } from '../sourceMeta'
@@ -10,18 +10,16 @@ interface ImageGridProps {
   loading?: boolean
 }
 
-function LazyImage({ src }: { src: string }) {
+const LazyImage = memo(function LazyImage({ src }: { src: string }) {
   const [loaded, setLoaded] = useState(false)
   return (
-    <div className="relative overflow-hidden rounded-xl bg-dark-900">
-      {!loaded && (
-        <div className="absolute inset-0 animate-pulse bg-dark-800" />
-      )}
+    <div className="relative overflow-hidden rounded-[22px] bg-[rgba(255,255,255,0.03)]">
+      {!loaded && <div className="absolute inset-0 animate-pulse bg-[rgba(255,255,255,0.05)]" />}
       <img
         src={src}
         alt=""
         className={[
-          'block w-full transition duration-500 will-change-transform group-hover:scale-[1.02]',
+          'block w-full transition duration-700 will-change-transform group-hover:scale-[1.025]',
           loaded ? 'opacity-100' : 'opacity-0',
         ].join(' ')}
         loading="lazy"
@@ -30,16 +28,16 @@ function LazyImage({ src }: { src: string }) {
       />
     </div>
   )
-}
+})
 
 function SkeletonGrid() {
   const heights = [220, 300, 240, 340, 260, 280, 200, 320, 260, 240, 300, 230]
   return (
-    <div className="masonry px-4">
+    <div className="masonry px-3 md:px-0">
       {heights.map((h, i) => (
         <div key={i} className="masonry-item">
           <div
-            className="overflow-hidden rounded-2xl border border-dark-700/50 bg-dark-900 animate-pulse"
+            className="editorial-panel animate-pulse overflow-hidden rounded-[26px]"
             style={{ height: `${h}px` }}
           />
         </div>
@@ -48,29 +46,139 @@ function SkeletonGrid() {
   )
 }
 
-export default function ImageGrid({ images, onImageClick, loading }: ImageGridProps) {
+const ImageCard = memo(function ImageCard({ img, batchTag, onImageClick }: {
+  img: ImageItem;
+  batchTag: string | undefined;
+  onImageClick: (img: ImageItem) => void;
+}) {
+  const meta = getSourceMeta(img.source)
+  const topTags = batchTag?.split(',').slice(0, 5).map(tag => tag.trim()).filter(Boolean) ?? []
+
+  return (
+    <div
+      className="masonry-item group cursor-pointer"
+      role="listitem"
+      tabIndex={0}
+      onClick={() => onImageClick(img)}
+      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onImageClick(img) } }}
+    >
+      <article className="editorial-panel overflow-hidden rounded-[28px] transition-all duration-300 hover:-translate-y-1 hover:border-[var(--line-strong)] hover:shadow-[0_36px_90px_rgba(0,0,0,0.34)]">
+        <div className="relative">
+          {img.is_video ? (
+            <video
+              src={img.thumb_url}
+              className="block w-full rounded-[22px]"
+              muted
+              loop
+              preload="metadata"
+              onMouseEnter={e => (e.target as HTMLVideoElement).play()}
+              onMouseLeave={e => {
+                const v = e.target as HTMLVideoElement
+                v.pause()
+                v.currentTime = 0
+              }}
+            />
+          ) : (
+            <LazyImage src={img.thumb_url} />
+          )}
+
+          <div className="absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-black/40 via-black/12 to-transparent opacity-80" />
+          <div className="absolute inset-x-0 bottom-0 h-36 bg-gradient-to-t from-black/88 via-black/35 to-transparent opacity-90" />
+
+          <div className="absolute left-3 top-3 inline-flex items-center gap-2 rounded-full border border-white/10 bg-[rgba(19,15,12,0.72)] px-2.5 py-1 text-[11px] text-white/88 backdrop-blur-sm">
+            <span className={`h-2 w-2 rounded-full ${meta.dotClass}`} />
+            <span>{meta.label}</span>
+          </div>
+
+          {img.is_video && (
+            <div className="absolute right-3 top-3 rounded-full border border-[var(--line)] bg-[rgba(19,15,12,0.72)] px-2.5 py-1 text-[11px] tracking-[0.18em] text-[var(--text)] backdrop-blur-sm" aria-label="视频">
+              VIDEO
+            </div>
+          )}
+
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 p-3">
+            <div className="rounded-[20px] border border-white/10 bg-[rgba(10,8,7,0.5)] px-3 py-3 backdrop-blur-md">
+              <div className="flex items-start gap-2">
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-[12px] uppercase tracking-[0.18em] text-white/45">Source ID</div>
+                  <div className="mt-1 truncate text-sm text-white/92">{img.source_id}</div>
+                </div>
+                {img.vision_score != null && (
+                  <span className={[
+                    'shrink-0 rounded-full px-2 py-1 font-mono text-[10px] font-medium',
+                    img.vision_score >= 0.7 ? 'bg-emerald-500/25 text-emerald-200'
+                      : img.vision_score >= 0.4 ? 'bg-amber-500/25 text-amber-200'
+                      : 'bg-rose-500/25 text-rose-200',
+                  ].join(' ')}>
+                    {(img.vision_score * 100).toFixed(0)}%
+                  </span>
+                )}
+              </div>
+
+              <div className="mt-2 flex items-center gap-2 text-[11px] text-white/58">
+                {img.date && <span>{img.date}</span>}
+                {img.subfolder && <span className="truncate">{img.subfolder}</span>}
+              </div>
+
+              {topTags.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {topTags.map(tag => (
+                    <span
+                      key={tag}
+                      className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] text-white/62"
+                    >
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </article>
+    </div>
+  )
+})
+
+const MAX_BATCH_TAGS = 300
+
+const ImageGrid = React.memo(function ImageGrid({ images, onImageClick, loading }: ImageGridProps) {
   const [batchTags, setBatchTags] = useState<Record<string, { top_tags: string; rating: string }>>({})
   const fetchedIdsRef = useRef<Set<number>>(new Set())
 
   useEffect(() => {
-    if (!images.length) return
+    if (!images.length) {
+      setBatchTags({})
+      fetchedIdsRef.current.clear()
+      return
+    }
     const newIds = images.filter(i => !fetchedIdsRef.current.has(i.id)).map(i => i.id)
     if (newIds.length === 0) return
     newIds.forEach(id => fetchedIdsRef.current.add(id))
-    fetchAutoTagsBatch(newIds)
+    const controller = new AbortController()
+    fetchAutoTagsBatch(newIds, controller.signal)
       .then(res => {
         if (res.tags) {
-          setBatchTags(prev => ({ ...prev, ...res.tags }))
+          setBatchTags(prev => {
+            const next = { ...prev, ...res.tags }
+            const keys = Object.keys(next)
+            if (keys.length > MAX_BATCH_TAGS) {
+              const toRemove = keys.slice(0, keys.length - MAX_BATCH_TAGS)
+              for (const k of toRemove) delete next[k]
+            }
+            return next
+          })
         }
       })
-      .catch(() => {})
+      .catch((e) => { if (e.name !== 'AbortError') console.error('fetchAutoTagsBatch failed:', e) })
+    return () => controller.abort()
   }, [images])
 
   if (loading) return <SkeletonGrid />
 
   if (images.length === 0) {
     return (
-      <div className="px-4">
+      <div className="px-3 md:px-0">
         <EmptyState
           title="这里暂时是空的"
           description="换个来源、日期或者排序试试，也可能只是这一天还没抓到图。"
@@ -80,85 +188,17 @@ export default function ImageGrid({ images, onImageClick, loading }: ImageGridPr
   }
 
   return (
-    <div className="masonry px-4">
-      {images.map(img => {
-        const meta = getSourceMeta(img.source)
-        return (
-          <div
-            key={img.id}
-            className="masonry-item group cursor-pointer"
-            onClick={() => onImageClick(img)}
-          >
-            <article className="overflow-hidden rounded-2xl border border-dark-700/50 bg-dark-900/70 shadow-sm transition-all duration-300 hover:-translate-y-0.5 hover:border-dark-500/60 hover:shadow-xl hover:shadow-black/20">
-              <div className="relative">
-                {img.is_video ? (
-                  <video
-                    src={img.thumb_url}
-                    className="block w-full"
-                    muted
-                    loop
-                    preload="metadata"
-                    onMouseEnter={e => (e.target as HTMLVideoElement).play()}
-                    onMouseLeave={e => {
-                      const v = e.target as HTMLVideoElement
-                      v.pause()
-                      v.currentTime = 0
-                    }}
-                  />
-                ) : (
-                  <LazyImage src={img.thumb_url} />
-                )}
-
-                <div className="absolute inset-x-0 top-0 h-20 bg-gradient-to-b from-black/35 via-black/10 to-transparent opacity-70" />
-                <div className="absolute inset-x-0 bottom-0 h-28 bg-gradient-to-t from-black/80 via-black/25 to-transparent opacity-0 transition-opacity duration-300 group-hover:opacity-100" />
-
-                <div className="absolute left-3 top-3 inline-flex items-center gap-2 rounded-full border border-white/10 bg-black/45 px-2.5 py-1 text-[11px] text-white/85 backdrop-blur-sm">
-                  <span className={`h-2 w-2 rounded-full ${meta.dotClass}`} />
-                  <span>{meta.label}</span>
-                </div>
-
-                {img.is_video && (
-                  <div className="absolute right-3 top-3 rounded-full border border-white/10 bg-black/45 px-2 py-1 text-[11px] text-white/85 backdrop-blur-sm">
-                    VIDEO
-                  </div>
-                )}
-
-                <div className="pointer-events-none absolute inset-x-0 bottom-0 p-3 opacity-0 transition-opacity duration-300 group-hover:opacity-100">
-                  <div className="rounded-xl border border-white/10 bg-black/45 px-3 py-2 backdrop-blur-sm">
-                    <div className="truncate text-xs text-white/90">{img.source_id}</div>
-                    <div className="mt-1 flex items-center gap-2 text-[11px] text-white/60">
-                      {img.date && <span>{img.date}</span>}
-                      {img.subfolder && <span className="truncate">{img.subfolder}</span>}
-                      {img.vision_score != null && (
-                        <span className={[
-                          'ml-auto rounded px-1 py-0.5 font-mono text-[10px] font-medium',
-                          img.vision_score >= 0.7 ? 'bg-emerald-500/30 text-emerald-300'
-                            : img.vision_score >= 0.4 ? 'bg-amber-500/30 text-amber-300'
-                            : 'bg-red-500/30 text-red-300',
-                        ].join(' ')}>
-                          🧠{(img.vision_score * 100).toFixed(0)}%
-                        </span>
-                      )}
-                    </div>
-                    {batchTags[String(img.id)]?.top_tags && (
-                      <div className="mt-1.5 flex flex-wrap gap-1">
-                        {batchTags[String(img.id)].top_tags.split(',').slice(0, 5).map(tag => (
-                          <span
-                            key={tag}
-                            className="rounded-full border border-white/10 bg-white/5 px-1.5 py-0.5 text-[10px] text-white/50"
-                          >
-                            {tag.trim()}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </article>
-          </div>
-        )
-      })}
+    <div className="masonry px-3 md:px-0" role="list">
+      {images.map(img => (
+        <ImageCard
+          key={img.id}
+          img={img}
+          batchTag={batchTags[String(img.id)]?.top_tags}
+          onImageClick={onImageClick}
+        />
+      ))}
     </div>
   )
-}
+})
+
+export default ImageGrid

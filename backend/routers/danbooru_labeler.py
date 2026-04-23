@@ -1,6 +1,7 @@
 import asyncio
 import io
 import json
+import logging
 import os
 import zipfile
 from pathlib import Path
@@ -14,6 +15,8 @@ from pydantic import BaseModel
 import state
 from config import CANDIDATES_DB_PATH, DANBOORU_LIKES_DIR
 from database import get_danbooru_client, get_danbooru_labels_db
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -36,10 +39,6 @@ async def danbooru_labeler_next(
     """Get the next unlabeled danbooru image for review."""
     dldb = await get_danbooru_labels_db()
 
-    # Get all labeled image IDs
-    async with dldb.execute("SELECT image_id FROM labels") as c:
-        labeled_ids = {r[0] for r in await c.fetchall()}
-
     # Build DanbooruFinder search params
     params: dict = {"order_by": "random", "per_page": "20"}
     if rating:
@@ -56,6 +55,15 @@ async def danbooru_labeler_next(
 
     results = data.get("results", [])
     pagination = data.get("pagination", {})
+
+    # Check only the candidate IDs against labels (not ALL labeled IDs)
+    candidate_ids = [item["id"] for item in results]
+    if candidate_ids:
+        placeholders = ",".join("?" * len(candidate_ids))
+        async with dldb.execute(f"SELECT image_id FROM labels WHERE image_id IN ({placeholders})", candidate_ids) as c:
+            labeled_ids = {r[0] for r in await c.fetchall()}
+    else:
+        labeled_ids = set()
 
     # Filter out already labeled
     for item in results:
@@ -103,15 +111,12 @@ async def danbooru_label_image(image_id: int, req: DanbooruLabelRequest):
         [image_id, req.verdict, req.ext, req.score, req.rating, req.danbooru_tags],
     )
 
-    # Handle user-added tags
     if req.tags:
-        for tag in req.tags:
-            tag = tag.strip()
-            if tag:
-                await dldb.execute(
-                    "INSERT OR IGNORE INTO tags (image_id, tag) VALUES (?, ?)",
-                    [image_id, tag],
-                )
+        clean_tags = [(image_id, t.strip()) for t in req.tags if t.strip()]
+        if clean_tags:
+            await dldb.executemany(
+                "INSERT OR IGNORE INTO tags (image_id, tag) VALUES (?, ?)", clean_tags
+            )
 
     await dldb.commit()
 
@@ -138,13 +143,13 @@ async def _download_danbooru_liked(image_id: int, ext: str):
         client = get_danbooru_client()
         resp = await client.get(f"/original/{image_id}.{ext}", follow_redirects=True, timeout=60.0)
         if resp.status_code == 200:
-            dest.write_bytes(resp.content)
+            await asyncio.to_thread(dest.write_bytes, resp.content)
         elif resp.status_code == 404:
             resp2 = await client.get(f"/preview/{image_id}.{ext}", timeout=30.0)
             if resp2.status_code == 200:
-                dest.write_bytes(resp2.content)
+                await asyncio.to_thread(dest.write_bytes, resp2.content)
     except Exception as e:
-        print(f"[danbooru_likes] Failed to download {image_id}.{ext}: {e}")
+        logger.warning("[danbooru_likes] Failed to download %d.%s: %s", image_id, ext, e)
 
 
 async def _remove_danbooru_liked(image_id: int):
@@ -155,7 +160,7 @@ async def _remove_danbooru_liked(image_id: int):
         for f in DANBOORU_LIKES_DIR.glob(f"{image_id}.*"):
             f.unlink()
     except Exception as e:
-        print(f"[danbooru_likes] Failed to remove {image_id}: {e}")
+        logger.warning("[danbooru_likes] Failed to remove %d: %s", image_id, e)
 
 
 @router.delete("/api/danbooru/labeler/{image_id}")
@@ -498,8 +503,8 @@ async def danbooru_export_liked(
         dl_name = f"danbooru_{verdict}{tag_suffix}_{packed}imgs.zip"
         return tmp_path, dl_name, packed, skipped
 
-    loop = asyncio.get_event_loop()
-    tmp_path, dl_filename, packed, skipped = await loop.run_in_executor(None, _build_zip_sync)
+    loop = asyncio.get_running_loop()
+    tmp_path, dl_filename, packed, skipped = await loop.run_in_executor(state._io_executor, _build_zip_sync)
 
     if packed == 0:
         try:
@@ -509,7 +514,7 @@ async def danbooru_export_liked(
         raise HTTPException(status_code=404, detail="No image files could be loaded")
 
     if skipped > 0:
-        print(f"[danbooru_export] {verdict}: packed {packed}, skipped {skipped}")
+        logger.info("[danbooru_export] %s: packed %d, skipped %d", verdict, packed, skipped)
 
     async def _stream_and_cleanup():
         try:

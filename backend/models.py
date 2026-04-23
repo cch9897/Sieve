@@ -1,11 +1,22 @@
 """ML model loading, unloading, inference device management, and scoring functions."""
 
 import json
+import logging
+import sys
+import threading
 from pathlib import Path
 
 import numpy as np
 
 import state
+
+logger = logging.getLogger(__name__)
+
+_classifier_dir = str(Path(__file__).parent.parent / "classifier")
+if _classifier_dir not in sys.path:
+    sys.path.insert(0, _classifier_dir)
+
+_model_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # Model loading / unloading
@@ -14,7 +25,7 @@ import state
 def _unload_model(key: str):
     """Unload model weights from memory."""
     if key in state._models and state._models[key].get('model') is not None:
-        print(f"[models] Unloading {key}")
+        logger.info("[models] Unloading %s", key)
         state._models[key]['model'] = None
         state._models[key]['transform'] = None
         state._models[key]['processor'] = None
@@ -28,12 +39,17 @@ def _unload_model(key: str):
 
 def _load_model_weights(key: str):
     """Load model weights for a given key. Unloads any previously loaded model first."""
+    with _model_lock:
+        _load_model_weights_locked(key)
+
+
+def _load_model_weights_locked(key: str):
     if key not in state._models:
         raise ValueError(f"Unknown model key: {key}")
     info = state._models[key]
     if info.get('model') is not None:
         state._loaded_model_key = key
-        return  # already loaded
+        return
 
     # Unload previous model to save memory
     if state._loaded_model_key and state._loaded_model_key != key:
@@ -48,8 +64,6 @@ def _load_model_weights(key: str):
     model_name = info['model_name']
 
     if model_class == 'NaFlexClassifier':
-        import sys
-        sys.path.insert(0, str(Path(__file__).parent.parent / "classifier"))
         from model_defs import NaFlexClassifier
         from transformers import AutoModel, AutoProcessor
 
@@ -72,8 +86,6 @@ def _load_model_weights(key: str):
         std = checkpoint.get('normalize_std', [0.229, 0.224, 0.225])
 
         if model_class == 'PreferenceModel':
-            import sys
-            sys.path.insert(0, str(Path(__file__).parent.parent / "classifier"))
             from model_defs import PreferenceModel
 
             num_features = checkpoint.get('num_features', 1024)
@@ -96,7 +108,7 @@ def _load_model_weights(key: str):
         raise ValueError(f"Unknown model_class: {model_class}")
 
     state._loaded_model_key = key
-    print(f"[models] Loaded weights for {key} ({model_name}), device=cpu")
+    logger.info("[models] Loaded weights for %s (%s), device=cpu", key, model_name)
 
 
 def _ensure_model_loaded(key: str | None = None):
@@ -105,7 +117,8 @@ def _ensure_model_loaded(key: str | None = None):
     if not key or key not in state._models:
         return False
     if state._models[key].get('model') is None:
-        _load_model_weights(key)
+        with _model_lock:
+            _load_model_weights_locked(key)
     return True
 
 
@@ -120,20 +133,21 @@ def _get_torch_device() -> str:
 
 def _migrate_cnn_to_device(device: str):
     """Move all loaded models to a different device (cpu/cuda)."""
-    state._inference_device = device
-    if not state._models:
-        return
-    try:
-        import torch
-        target = torch.device(device)
-        for key, info in state._models.items():
-            if info.get('model') is None:
-                continue
-            info['model'] = info['model'].to(target)
-            info['model'].eval()
-        print(f"[inference] All models ({list(state._models.keys())}) migrated to {device}")
-    except Exception as e:
-        print(f"[inference] Failed to migrate models to {device}: {e}")
+    with _model_lock:
+        state._inference_device = device
+        if not state._models:
+            return
+        try:
+            import torch
+            target = torch.device(device)
+            for key, info in state._models.items():
+                if info.get('model') is None:
+                    continue
+                info['model'] = info['model'].to(target)
+                info['model'].eval()
+            logger.info("[inference] All models (%s) migrated to %s", list(state._models.keys()), device)
+        except Exception as e:
+            logger.error("[inference] Failed to migrate models to %s: %s", device, e)
 
 
 def _check_cuda_available() -> bool:
@@ -166,7 +180,7 @@ def _cuda_info() -> dict | None:
             "device_count": torch.cuda.device_count(),
         }
     except Exception as e:
-        print(f"[inference] _cuda_info error: {e}")
+        logger.warning("[inference] _cuda_info error: %s", e)
         return None
 
 
@@ -228,7 +242,7 @@ def _score_image_with_model(image_path: str | Path, model_key: str | None = None
                 prob = torch.sigmoid(logit).item()
         return prob
     except Exception as e:
-        print(f"[models] Failed to score {image_path}: {e}")
+        logger.warning("[models] Failed to score %s: %s", image_path, e)
         return None
 
 
@@ -246,20 +260,20 @@ def _fused_score(tag_score: float, cnn_score: float | None, tag_weight: float = 
 
 def _build_preference_features(tags_str: str, rating: str, model_data: dict) -> np.ndarray:
     """Build feature vector for a Danbooru image (matches train_classifier.py logic)."""
-    import sys
-    sys.path.insert(0, str(Path(__file__).parent.parent / "classifier"))
     from feature_utils import build_tag_features
     return build_tag_features(tags_str, rating, model_data)
 
 
 async def _reload_preference_model():
     """Hot-reload XGBoost model after retrain."""
+    import asyncio
+
     from config import PREFERENCE_MODEL_PATH
     if PREFERENCE_MODEL_PATH.exists():
         try:
             import joblib
-            new_model = joblib.load(PREFERENCE_MODEL_PATH)
+            new_model = await asyncio.to_thread(joblib.load, PREFERENCE_MODEL_PATH)
             state._preference_model = new_model
-            print(f"[ml] XGBoost hot-reloaded: AUC={new_model.get('auc', 0):.4f}")
+            logger.info("[ml] XGBoost hot-reloaded: AUC=%.4f", new_model.get('auc', 0))
         except Exception as e:
-            print(f"[ml] Failed to hot-reload XGBoost: {e}")
+            logger.error("[ml] Failed to hot-reload XGBoost: %s", e)
