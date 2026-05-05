@@ -1,5 +1,5 @@
 {
-  "url": "http://192.168.50.131:5099",
+  "url": "http://gpu-server:5099",
   "batch_size": 64,
   "enabled": false,
   "inference_mode": "local_gpu"

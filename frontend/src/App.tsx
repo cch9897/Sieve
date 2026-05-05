@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef, lazy, Suspense } from 'react'
+import React, { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react'
 import Header from './components/Header'
 import FilterBar from './components/FilterBar'
 import ImageGrid from './components/ImageGrid'
@@ -9,7 +9,10 @@ import EmptyState from './components/EmptyState'
 import LoadMoreTrigger from './components/LoadMoreTrigger'
 import KeyboardShortcuts from './components/KeyboardShortcuts'
 import { fetchImages, fetchDates, fetchSources } from './api'
-import type { ImageItem, NovelItem, View, GalleryMode, MediaFilter } from './types'
+import { usePersistedState } from './hooks/usePersistedState'
+import { useGalleryFilters } from './hooks/useGalleryFilters'
+import { useNovelFilters } from './hooks/useNovelFilters'
+import type { ImageItem, NovelItem, View, GalleryMode } from './types'
 
 const StatsView = lazy(() => import('./components/StatsView'))
 const NovelList = lazy(() => import('./components/NovelList'))
@@ -18,98 +21,6 @@ const Labeler = lazy(() => import('./components/Labeler'))
 const DanbooruLabeler = lazy(() => import('./components/DanbooruLabeler'))
 
 const GALLERY_PAGE_SIZE = 60
-const STORAGE_KEY = 'sieve-ui-state'
-
-type SortOrder = 'newest' | 'oldest'
-
-interface PersistedState {
-  view: View
-  selectedSource: string
-  selectedDate: string
-  selectedMedia: MediaFilter
-  sort: SortOrder | string
-  galleryMode: GalleryMode
-  pageByMode: Record<GalleryMode, number>
-  galleryScrollY: number
-  selectedNovelId: number | null
-  novelSearch: string
-  novelDate: string
-  novelSort: string
-  novelPage: number
-}
-
-const VALID_VIEWS: View[] = ['gallery', 'novels', 'labeler', 'danbooru', 'stats']
-
-const defaultState: PersistedState = {
-  view: 'gallery',
-  selectedSource: '',
-  selectedDate: '',
-  selectedMedia: '',
-  sort: 'newest',
-  galleryMode: 'infinite',
-  pageByMode: { infinite: 1, paged: 1 },
-  galleryScrollY: 0,
-  selectedNovelId: null,
-  novelSearch: '',
-  novelDate: '',
-  novelSort: 'newest',
-  novelPage: 1,
-}
-
-function loadPersistedState(): PersistedState {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return defaultState
-    const parsed = JSON.parse(raw)
-    if (parsed.view && !VALID_VIEWS.includes(parsed.view)) parsed.view = defaultState.view
-    return { ...defaultState, ...parsed }
-  } catch {
-    return defaultState
-  }
-}
-
-function persistState(state: PersistedState) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
-  } catch { /* ignore */ }
-}
-
-interface NovelFilterState {
-  search: string
-  date: string
-  sort: string
-  page: number
-}
-
-function getCurrentPersistedState(
-  view: View,
-  selectedSource: string,
-  selectedDate: string,
-  selectedMedia: MediaFilter,
-  sort: string,
-  galleryMode: GalleryMode,
-  pageByMode: Record<GalleryMode, number>,
-  scrollY: number,
-  selectedNovel: NovelItem | null,
-  pendingNovelId: number | null,
-  novelState: NovelFilterState,
-): PersistedState {
-  return {
-    view,
-    selectedSource,
-    selectedDate,
-    selectedMedia,
-    sort,
-    galleryMode,
-    pageByMode,
-    galleryScrollY: view === 'gallery' ? scrollY : 0,
-    selectedNovelId: selectedNovel?.id ?? pendingNovelId ?? null,
-    novelSearch: novelState.search,
-    novelDate: novelState.date,
-    novelSort: novelState.sort,
-    novelPage: novelState.page,
-  }
-}
 
 const suspenseFallback = (
   <div className="flex h-64 items-center justify-center">
@@ -118,19 +29,20 @@ const suspenseFallback = (
 )
 
 export default function App() {
-  const initial = useMemo(loadPersistedState, [])
+  const { initial, scrollYRef, persist, persistNow } = usePersistedState()
+  const {
+    selectedSource, selectedDate, selectedMedia, sort,
+    galleryMode, pageByMode, setPageByMode,
+    handleSourceChange, handleDateChange, handleMediaChange,
+    handleSortChange, handleGalleryModeChange,
+  } = useGalleryFilters(initial)
+  const { novelState, handleNovelStateChange } = useNovelFilters(initial)
 
   const [view, setView] = useState<View>(initial.view)
   const [images, setImages] = useState<ImageItem[]>([])
   const [sources, setSources] = useState<string[]>([])
   const [sourceCounts, setSourceCounts] = useState<Record<string, number>>({})
   const [dates, setDates] = useState<string[]>([])
-  const [selectedSource, setSelectedSource] = useState(initial.selectedSource)
-  const [selectedDate, setSelectedDate] = useState(initial.selectedDate)
-  const [selectedMedia, setSelectedMedia] = useState<MediaFilter>(initial.selectedMedia)
-  const [sort, setSort] = useState(initial.sort)
-  const [galleryMode, setGalleryMode] = useState<GalleryMode>(initial.galleryMode)
-  const [pageByMode, setPageByMode] = useState<Record<GalleryMode, number>>(initial.pageByMode)
   const [total, setTotal] = useState(0)
   const [pages, setPages] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -142,52 +54,28 @@ export default function App() {
   const [filterExpanded, setFilterExpanded] = useState(false)
   const [viewFade, setViewFade] = useState(false)
 
-  const [novelState, setNovelState] = useState<NovelFilterState>({
-    search: initial.novelSearch,
-    date: initial.novelDate,
-    sort: initial.novelSort,
-    page: initial.novelPage,
-  })
-
   const currentPage = pageByMode[galleryMode]
   const hasMore = galleryMode === 'infinite' && currentPage < pages
-  const scrollYRef = useRef(initial.galleryScrollY)
   const abortRef = useRef<AbortController | null>(null)
   const galleryFetchedRef = useRef(false)
 
+  // Persist state to localStorage on changes
   useEffect(() => {
-    const onScroll = () => {
-      if (view === 'gallery') scrollYRef.current = window.scrollY
-    }
-    window.addEventListener('scroll', onScroll, { passive: true })
-    return () => window.removeEventListener('scroll', onScroll)
-  }, [view])
+    persist(view, selectedSource, selectedDate, selectedMedia, sort, galleryMode, pageByMode, selectedNovel, pendingNovelId, novelState)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, selectedSource, selectedDate, selectedMedia, sort, galleryMode, pageByMode, selectedNovel, pendingNovelId, novelState, persist])
 
-  useEffect(() => {
-    const timeout = setTimeout(() => {
-      persistState(getCurrentPersistedState(
-        view, selectedSource, selectedDate, selectedMedia, sort,
-        galleryMode, pageByMode, scrollYRef.current,
-        selectedNovel, pendingNovelId, novelState,
-      ))
-    }, 500)
-    return () => clearTimeout(timeout)
-  }, [view, selectedSource, selectedDate, selectedMedia, sort, galleryMode, pageByMode,
-      selectedNovel, pendingNovelId, novelState])
-
+  // Persist on unload
   useEffect(() => {
     const onBeforeUnload = () => {
-      persistState(getCurrentPersistedState(
-        view, selectedSource, selectedDate, selectedMedia, sort,
-        galleryMode, pageByMode, scrollYRef.current,
-        selectedNovel, pendingNovelId, novelState,
-      ))
+      persistNow(view, selectedSource, selectedDate, selectedMedia, sort, galleryMode, pageByMode, selectedNovel, pendingNovelId, novelState)
     }
     window.addEventListener('beforeunload', onBeforeUnload)
     return () => window.removeEventListener('beforeunload', onBeforeUnload)
-  }, [view, selectedSource, selectedDate, selectedMedia, sort, galleryMode, pageByMode,
-      selectedNovel, pendingNovelId, novelState])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, selectedSource, selectedDate, selectedMedia, sort, galleryMode, pageByMode, selectedNovel, pendingNovelId, novelState, persistNow])
 
+  // One-time data fetch
   useEffect(() => {
     if (galleryFetchedRef.current) return
     galleryFetchedRef.current = true
@@ -238,7 +126,7 @@ export default function App() {
         setLoadingMore(false)
       }
     }
-  }, [galleryMode, selectedSource, selectedDate, selectedMedia, sort])
+  }, [galleryMode, selectedSource, selectedDate, selectedMedia, sort, setPageByMode])
 
   useEffect(() => {
     if (view !== 'gallery') return
@@ -254,7 +142,7 @@ export default function App() {
       }, 50)
       return () => window.clearTimeout(t)
     }
-  }, [pageByMode, galleryMode, view])
+  }, [pageByMode, galleryMode, view, scrollYRef])
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -289,28 +177,6 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [currentPage, galleryMode, loadImages, pages, selectedNovel, view])
 
-  const resetGalleryAndReload = useCallback((patch?: Partial<{
-    selectedSource: string
-    selectedDate: string
-    selectedMedia: MediaFilter
-    sort: string
-  }>) => {
-    if (patch?.selectedSource !== undefined) setSelectedSource(patch.selectedSource)
-    if (patch?.selectedDate !== undefined) setSelectedDate(patch.selectedDate)
-    if (patch?.selectedMedia !== undefined) setSelectedMedia(patch.selectedMedia)
-    if (patch?.sort !== undefined) setSort(patch.sort)
-    setImages([])
-    setTotal(0)
-    setPages(0)
-    setPageByMode(prev => ({ ...prev, [galleryMode]: 1 }))
-    window.scrollTo({ top: 0, behavior: 'auto' })
-  }, [galleryMode])
-
-  const handleSourceChange = useCallback((s: string) => resetGalleryAndReload({ selectedSource: s }), [resetGalleryAndReload])
-  const handleDateChange = useCallback((d: string) => resetGalleryAndReload({ selectedDate: d }), [resetGalleryAndReload])
-  const handleMediaChange = useCallback((m: MediaFilter) => resetGalleryAndReload({ selectedMedia: m }), [resetGalleryAndReload])
-  const handleSortChange = useCallback((s: string) => resetGalleryAndReload({ sort: s }), [resetGalleryAndReload])
-
   const handleViewChange = useCallback((v: View) => {
     if (view === 'gallery') {
       scrollYRef.current = window.scrollY
@@ -322,26 +188,34 @@ export default function App() {
     }, 150)
     if (v !== 'novels') setSelectedNovel(null)
     if (v !== 'gallery') setLightboxImage(null)
-  }, [view])
+  }, [view, scrollYRef])
 
-  const handleGalleryModeChange = useCallback((mode: GalleryMode) => {
-    if (galleryMode === mode) return
-    setGalleryMode(mode)
+  // Propagate filter changes that need to clear images
+  const resetGalleryAndReload = useCallback(() => {
     setImages([])
     setTotal(0)
     setPages(0)
-    setPageByMode(p => ({ ...p, [mode]: p[mode] || 1 }))
+    setPageByMode(prev => ({ ...prev, [galleryMode]: 1 }))
     window.scrollTo({ top: 0, behavior: 'auto' })
-  }, [galleryMode])
+  }, [galleryMode, setPageByMode])
+
+  // Override filter change handlers to also clear images
+  const handleSourceChangeWrapped = useCallback((s: string) => { handleSourceChange(s); resetGalleryAndReload() }, [handleSourceChange, resetGalleryAndReload])
+  const handleDateChangeWrapped = useCallback((d: string) => { handleDateChange(d); resetGalleryAndReload() }, [handleDateChange, resetGalleryAndReload])
+  const handleMediaChangeWrapped = useCallback((m: string) => { handleMediaChange(m as '' | 'image' | 'video'); resetGalleryAndReload() }, [handleMediaChange, resetGalleryAndReload])
+  const handleSortChangeWrapped = useCallback((s: string) => { handleSortChange(s); resetGalleryAndReload() }, [handleSortChange, resetGalleryAndReload])
+
+  const handleGalleryModeChangeWrapped = useCallback((mode: GalleryMode) => {
+    handleGalleryModeChange(mode)
+    setImages([])
+    setTotal(0)
+    setPages(0)
+  }, [handleGalleryModeChange])
 
   const loadMore = useCallback(() => {
     if (!hasMore || loadingMore) return
     loadImages(currentPage + 1, true)
   }, [hasMore, loadingMore, currentPage, loadImages])
-
-  const handleNovelStateChange = useCallback((patch: Partial<NovelFilterState>) => {
-    setNovelState(prev => ({ ...prev, ...patch }))
-  }, [])
 
   const closeLightbox = useCallback(() => setLightboxImage(null), [])
   const handlePageChange = useCallback((p: number) => loadImages(p), [loadImages])
@@ -361,13 +235,13 @@ export default function App() {
             selectedDate={selectedDate}
             selectedMedia={selectedMedia}
             sort={sort}
-            onSourceChange={handleSourceChange}
-            onDateChange={handleDateChange}
-            onMediaChange={handleMediaChange}
-            onSortChange={handleSortChange}
+            onSourceChange={handleSourceChangeWrapped}
+            onDateChange={handleDateChangeWrapped}
+            onMediaChange={handleMediaChangeWrapped}
+            onSortChange={handleSortChangeWrapped}
             total={total}
             mode={galleryMode}
-            onModeChange={handleGalleryModeChange}
+            onModeChange={handleGalleryModeChangeWrapped}
             expanded={filterExpanded}
             onExpandedChange={setFilterExpanded}
           />

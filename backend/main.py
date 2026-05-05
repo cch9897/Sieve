@@ -223,6 +223,38 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+class MaxBodySizeMiddleware:
+    def __init__(self, app, max_size: int = 1_000_000):
+        self.app = app
+        self.max_size = max_size
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        content_length = 0
+        for header_name, header_value in scope.get("headers", []):
+            if header_name == b"content-length":
+                try:
+                    content_length = int(header_value)
+                except (ValueError, TypeError):
+                    pass
+                break
+        if content_length > self.max_size:
+            await send({
+                "type": "http.response.start",
+                "status": 413,
+                "headers": [(b"content-type", b"application/json")],
+            })
+            await send({
+                "type": "http.response.body",
+                "body": b'{"detail":"Request body too large"}',
+            })
+            return
+        await self.app(scope, receive, send)
+
+app.add_middleware(MaxBodySizeMiddleware, max_size=1_000_000)
+
 # ---------------------------------------------------------------------------
 # Include routers
 # ---------------------------------------------------------------------------

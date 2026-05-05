@@ -156,6 +156,14 @@ _danbooru_client = None  # httpx.AsyncClient, set by database.get_danbooru_clien
 # ---------------------------------------------------------------------------
 
 _background_tasks: set = set()
+def _add_background_task(task):
+    """Track a fire-and-forget asyncio task, auto-removing on completion."""
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+def _remove_background_task(task):
+    """Explicitly remove a tracked background task."""
+    _background_tasks.discard(task)
 
 # ---------------------------------------------------------------------------
 # Novel meta cache

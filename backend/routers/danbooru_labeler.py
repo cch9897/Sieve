@@ -123,12 +123,10 @@ async def danbooru_label_image(image_id: int, req: DanbooruLabelRequest):
     # Auto-download liked images / remove if verdict changed away from liked
     if req.verdict == "liked" and req.ext:
         _task = asyncio.create_task(_download_danbooru_liked(image_id, req.ext))
-        state._background_tasks.add(_task)
-        _task.add_done_callback(state._background_tasks.discard)
+        state._add_background_task(_task)
     else:
         _task = asyncio.create_task(_remove_danbooru_liked(image_id))
-        state._background_tasks.add(_task)
-        _task.add_done_callback(state._background_tasks.discard)
+        state._add_background_task(_task)
 
     return {"ok": True}
 
@@ -169,8 +167,7 @@ async def danbooru_unlabel_image(image_id: int):
     dldb = await get_danbooru_labels_db()
     # Remove local file if it was liked
     _task = asyncio.create_task(_remove_danbooru_liked(image_id))
-    state._background_tasks.add(_task)
-    _task.add_done_callback(state._background_tasks.discard)
+    state._add_background_task(_task)
     await dldb.execute("DELETE FROM labels WHERE image_id = ?", [image_id])
     await dldb.execute("DELETE FROM tags WHERE image_id = ?", [image_id])
     await dldb.commit()

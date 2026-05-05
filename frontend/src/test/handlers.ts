@@ -7,8 +7,24 @@ const mockImages = [
 ]
 
 export const handlers = [
-  http.get('/api/images', () => {
+  http.get('/api/images', ({ request }) => {
+    const url = new URL(request.url)
+    if (url.searchParams.get('error') === '500') {
+      return new HttpResponse('Internal Server Error', { status: 500 })
+    }
+    if (url.searchParams.get('error') === 'empty') {
+      return HttpResponse.json({ images: [], total: 0, page: 1, per_page: 50, pages: 0 })
+    }
     return HttpResponse.json({ images: mockImages, total: 2, page: 1, per_page: 50, pages: 1 })
+  }),
+
+  http.post('/api/autotags/batch', () => {
+    return HttpResponse.json({
+      tags: {
+        '1': { top_tags: 'tag_a, tag_b', rating: 'sfw' },
+        '2': { top_tags: 'tag_c', rating: 'nsfw' },
+      },
+    })
   }),
 
   http.get('/api/stats', () => {

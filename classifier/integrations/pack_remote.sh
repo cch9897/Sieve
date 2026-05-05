@@ -23,7 +23,7 @@ if [ -f "$PROJECT_ROOT/.env" ]; then
 fi
 
 TOYSERVER="${TOYSERVER_HOST:?Set TOYSERVER_HOST in .env}"
-REMOTE_WORK="${REMOTE_WORK_DIR:-/home/cch-claw/_tmp_pack_work}"
+REMOTE_WORK="${REMOTE_WORK_DIR:-/tmp/_tmp_pack_work}"
 LOCAL_WORK="$CLASSIFIER_DIR/_tmp_pack_local"
 ARCHIVE="$CLASSIFIER_DIR/preference_train.tar.gz"
 MAX_SIZE=512
