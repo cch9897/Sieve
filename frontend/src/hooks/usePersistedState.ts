@@ -18,6 +18,7 @@ export interface PersistedState {
   novelDate: string
   novelSort: string
   novelPage: number
+  searchQuery: string
 }
 
 export interface NovelFilterState {
@@ -45,6 +46,7 @@ const defaultState: PersistedState = {
   novelDate: '',
   novelSort: 'newest',
   novelPage: 1,
+  searchQuery: '',
 }
 
 function loadPersistedState(): PersistedState {
@@ -77,6 +79,7 @@ function buildPersistedState(
   selectedNovel: NovelItem | null,
   pendingNovelId: number | null,
   novelState: NovelFilterState,
+  searchQuery: string,
 ): PersistedState {
   return {
     view,
@@ -92,6 +95,7 @@ function buildPersistedState(
     novelDate: novelState.date,
     novelSort: novelState.sort,
     novelPage: novelState.page,
+    searchQuery,
   }
 }
 
@@ -112,13 +116,14 @@ export function usePersistedState() {
     selectedNovel: NovelItem | null,
     pendingNovelId: number | null,
     novelState: NovelFilterState,
+    searchQuery: string,
   ) => {
     if (persistTimerRef.current !== null) clearTimeout(persistTimerRef.current)
     persistTimerRef.current = setTimeout(() => {
       persistState(buildPersistedState(
         view, selectedSource, selectedDate, selectedMedia, sort,
         galleryMode, pageByMode, scrollYRef.current,
-        selectedNovel, pendingNovelId, novelState,
+        selectedNovel, pendingNovelId, novelState, searchQuery,
       ))
     }, 500)
   }
@@ -134,11 +139,12 @@ export function usePersistedState() {
     selectedNovel: NovelItem | null,
     pendingNovelId: number | null,
     novelState: NovelFilterState,
+    searchQuery: string,
   ) => {
     persistState(buildPersistedState(
       view, selectedSource, selectedDate, selectedMedia, sort,
       galleryMode, pageByMode, scrollYRef.current,
-      selectedNovel, pendingNovelId, novelState,
+      selectedNovel, pendingNovelId, novelState, searchQuery,
     ))
   }
 

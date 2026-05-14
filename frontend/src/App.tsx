@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react'
+import React, { useState, useEffect, useCallback, lazy, Suspense } from 'react'
+import { flushSync } from 'react-dom'
 import Header from './components/Header'
 import FilterBar from './components/FilterBar'
 import ImageGrid from './components/ImageGrid'
@@ -8,19 +9,17 @@ import ScrollToTop from './components/ScrollToTop'
 import EmptyState from './components/EmptyState'
 import LoadMoreTrigger from './components/LoadMoreTrigger'
 import KeyboardShortcuts from './components/KeyboardShortcuts'
-import { fetchImages, fetchDates, fetchSources } from './api'
 import { usePersistedState } from './hooks/usePersistedState'
 import { useGalleryFilters } from './hooks/useGalleryFilters'
 import { useNovelFilters } from './hooks/useNovelFilters'
-import type { ImageItem, NovelItem, View, GalleryMode } from './types'
+import { useGallery } from './hooks/useGallery'
+import type { ImageItem, NovelItem, View, GalleryMode, MediaFilter } from './types'
 
 const StatsView = lazy(() => import('./components/StatsView'))
 const NovelList = lazy(() => import('./components/NovelList'))
 const NovelReader = lazy(() => import('./components/NovelReader'))
 const Labeler = lazy(() => import('./components/Labeler'))
 const DanbooruLabeler = lazy(() => import('./components/DanbooruLabeler'))
-
-const GALLERY_PAGE_SIZE = 60
 
 const suspenseFallback = (
   <div className="flex h-64 items-center justify-center">
@@ -39,100 +38,44 @@ export default function App() {
   const { novelState, handleNovelStateChange } = useNovelFilters(initial)
 
   const [view, setView] = useState<View>(initial.view)
-  const [images, setImages] = useState<ImageItem[]>([])
-  const [sources, setSources] = useState<string[]>([])
-  const [sourceCounts, setSourceCounts] = useState<Record<string, number>>({})
-  const [dates, setDates] = useState<string[]>([])
-  const [total, setTotal] = useState(0)
-  const [pages, setPages] = useState(0)
-  const [loading, setLoading] = useState(true)
-  const [loadingMore, setLoadingMore] = useState(false)
   const [lightboxImage, setLightboxImage] = useState<ImageItem | null>(null)
-  const [error, setError] = useState<string | null>(null)
   const [selectedNovel, setSelectedNovel] = useState<NovelItem | null>(null)
   const pendingNovelId = initial.selectedNovelId
   const [filterExpanded, setFilterExpanded] = useState(false)
-  const [viewFade, setViewFade] = useState(false)
 
-  const currentPage = pageByMode[galleryMode]
-  const hasMore = galleryMode === 'infinite' && currentPage < pages
-  const abortRef = useRef<AbortController | null>(null)
-  const galleryFetchedRef = useRef(false)
+  // Hooks must run unconditionally; useGallery's data-fetch effect is gated on view==='gallery'.
+  const gallery = useGallery(
+    { selectedSource, selectedDate, selectedMedia, sort, galleryMode, pageByMode, setPageByMode },
+    { view, initialSearchQuery: initial.searchQuery },
+  )
+  const {
+    images, displayImages, sources, sourceCounts, dates, total, pages,
+    loading, loadingMore, error, currentPage, hasMore,
+    loadImages, loadMore, resetAndReload, clearListForModeSwitch,
+    searchQuery, setSearchQuery,
+  } = gallery
+
+  const handleSearchChange = useCallback((q: string) => {
+    setSearchQuery(q)
+  }, [setSearchQuery])
 
   // Persist state to localStorage on changes
   useEffect(() => {
-    persist(view, selectedSource, selectedDate, selectedMedia, sort, galleryMode, pageByMode, selectedNovel, pendingNovelId, novelState)
+    persist(view, selectedSource, selectedDate, selectedMedia, sort, galleryMode, pageByMode, selectedNovel, pendingNovelId, novelState, searchQuery)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, selectedSource, selectedDate, selectedMedia, sort, galleryMode, pageByMode, selectedNovel, pendingNovelId, novelState, persist])
+  }, [view, selectedSource, selectedDate, selectedMedia, sort, galleryMode, pageByMode, selectedNovel, pendingNovelId, novelState, searchQuery, persist])
 
   // Persist on unload
   useEffect(() => {
     const onBeforeUnload = () => {
-      persistNow(view, selectedSource, selectedDate, selectedMedia, sort, galleryMode, pageByMode, selectedNovel, pendingNovelId, novelState)
+      persistNow(view, selectedSource, selectedDate, selectedMedia, sort, galleryMode, pageByMode, selectedNovel, pendingNovelId, novelState, searchQuery)
     }
     window.addEventListener('beforeunload', onBeforeUnload)
     return () => window.removeEventListener('beforeunload', onBeforeUnload)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, selectedSource, selectedDate, selectedMedia, sort, galleryMode, pageByMode, selectedNovel, pendingNovelId, novelState, persistNow])
+  }, [view, selectedSource, selectedDate, selectedMedia, sort, galleryMode, pageByMode, selectedNovel, pendingNovelId, novelState, searchQuery, persistNow])
 
-  // One-time data fetch
-  useEffect(() => {
-    if (galleryFetchedRef.current) return
-    galleryFetchedRef.current = true
-    fetchSources()
-      .then(r => {
-        setSources(r.sources)
-        if (r.counts) setSourceCounts(r.counts)
-      })
-      .catch(e => console.error('fetchSources failed:', e))
-    fetchDates()
-      .then(r => setDates(r.dates))
-      .catch(e => console.error('fetchDates failed:', e))
-  }, [])
-
-  const loadImages = useCallback(async (targetPage: number, append = false) => {
-    abortRef.current?.abort()
-    const controller = new AbortController()
-    abortRef.current = controller
-
-    if (append) {
-      setLoadingMore(true)
-    } else {
-      setLoading(true)
-    }
-    setError(null)
-
-    try {
-      const data = await fetchImages({
-        source: selectedSource || undefined,
-        date: selectedDate || undefined,
-        media: selectedMedia || undefined,
-        sort,
-        page: targetPage,
-        per_page: GALLERY_PAGE_SIZE,
-      }, controller.signal)
-
-      if (controller.signal.aborted) return
-      setImages(prev => (append ? [...prev, ...data.images] : data.images))
-      setTotal(data.total)
-      setPages(data.pages)
-      setPageByMode(prev => ({ ...prev, [galleryMode]: targetPage }))
-    } catch (e) {
-      if (e instanceof DOMException && e.name === 'AbortError') return
-      setError('图片加载失败了，刷新一下或者换个筛选再试试。')
-    } finally {
-      if (!controller.signal.aborted) {
-        setLoading(false)
-        setLoadingMore(false)
-      }
-    }
-  }, [galleryMode, selectedSource, selectedDate, selectedMedia, sort, setPageByMode])
-
-  useEffect(() => {
-    if (view !== 'gallery') return
-    loadImages(pageByMode[galleryMode], false)
-  }, [loadImages, view, galleryMode])
-
+  // Restore scroll position after a fresh gallery list lands.
   useEffect(() => {
     if (view !== 'gallery') return
     const savedY = scrollYRef.current
@@ -151,11 +94,11 @@ export default function App() {
       const typing = tag === 'input' || tag === 'textarea' || target?.isContentEditable
       if (typing) return
 
-      if (e.key === 'g' || e.key === 'G') { e.preventDefault(); setView('gallery') }
-      else if (e.key === 'n' || e.key === 'N') { e.preventDefault(); setView('novels') }
-      else if (e.key === 'd' || e.key === 'D') { e.preventDefault(); setView('labeler') }
-      else if (e.key === 'b' || e.key === 'B') { e.preventDefault(); setView('danbooru') }
-      else if (e.key === 's' || e.key === 'S') { e.preventDefault(); setView('stats') }
+      if (e.key === 'g' || e.key === 'G') { e.preventDefault(); handleViewChange('gallery') }
+      else if (e.key === 'n' || e.key === 'N') { e.preventDefault(); handleViewChange('novels') }
+      else if (e.key === 'd' || e.key === 'D') { e.preventDefault(); handleViewChange('labeler') }
+      else if (e.key === 'b' || e.key === 'B') { e.preventDefault(); handleViewChange('danbooru') }
+      else if (e.key === 's' || e.key === 'S') { e.preventDefault(); handleViewChange('stats') }
       else if (e.key === 'f' || e.key === 'F') {
         if (view === 'gallery') setFilterExpanded(v => !v)
       } else if (e.key === 'j' || e.key === 'J') {
@@ -177,52 +120,59 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [currentPage, galleryMode, loadImages, pages, selectedNovel, view])
 
+
   const handleViewChange = useCallback((v: View) => {
     if (view === 'gallery') {
       scrollYRef.current = window.scrollY
     }
-    setViewFade(true)
-    setTimeout(() => {
+    if ('startViewTransition' in document) {
+      document.startViewTransition(() => {
+        flushSync(() => {
+          setView(v)
+          if (v !== 'novels') setSelectedNovel(null)
+          if (v !== 'gallery') setLightboxImage(null)
+        })
+      })
+    } else {
       setView(v)
-      setViewFade(false)
-    }, 150)
-    if (v !== 'novels') setSelectedNovel(null)
-    if (v !== 'gallery') setLightboxImage(null)
+      if (v !== 'novels') setSelectedNovel(null)
+      if (v !== 'gallery') setLightboxImage(null)
+    }
   }, [view, scrollYRef])
 
-  // Propagate filter changes that need to clear images
-  const resetGalleryAndReload = useCallback(() => {
-    setImages([])
-    setTotal(0)
-    setPages(0)
-    setPageByMode(prev => ({ ...prev, [galleryMode]: 1 }))
-    window.scrollTo({ top: 0, behavior: 'auto' })
-  }, [galleryMode, setPageByMode])
-
-  // Override filter change handlers to also clear images
-  const handleSourceChangeWrapped = useCallback((s: string) => { handleSourceChange(s); resetGalleryAndReload() }, [handleSourceChange, resetGalleryAndReload])
-  const handleDateChangeWrapped = useCallback((d: string) => { handleDateChange(d); resetGalleryAndReload() }, [handleDateChange, resetGalleryAndReload])
-  const handleMediaChangeWrapped = useCallback((m: string) => { handleMediaChange(m as '' | 'image' | 'video'); resetGalleryAndReload() }, [handleMediaChange, resetGalleryAndReload])
-  const handleSortChangeWrapped = useCallback((s: string) => { handleSortChange(s); resetGalleryAndReload() }, [handleSortChange, resetGalleryAndReload])
+  // Filter change handlers — wrap each to also clear the gallery list and bounce to page 1.
+  const handleSourceChangeWrapped = useCallback((s: string) => { handleSourceChange(s); resetAndReload() }, [handleSourceChange, resetAndReload])
+  const handleDateChangeWrapped = useCallback((d: string) => { handleDateChange(d); resetAndReload() }, [handleDateChange, resetAndReload])
+  const handleMediaChangeWrapped = useCallback((m: string) => { handleMediaChange(m as '' | 'image' | 'video'); resetAndReload() }, [handleMediaChange, resetAndReload])
+  const handleSortChangeWrapped = useCallback((s: string) => { handleSortChange(s); resetAndReload() }, [handleSortChange, resetAndReload])
 
   const handleGalleryModeChangeWrapped = useCallback((mode: GalleryMode) => {
     handleGalleryModeChange(mode)
-    setImages([])
-    setTotal(0)
-    setPages(0)
-  }, [handleGalleryModeChange])
+    clearListForModeSwitch()
+  }, [handleGalleryModeChange, clearListForModeSwitch])
 
-  const loadMore = useCallback(() => {
-    if (!hasMore || loadingMore) return
-    loadImages(currentPage + 1, true)
-  }, [hasMore, loadingMore, currentPage, loadImages])
+  const clearAllFilters = useCallback(() => {
+    handleSourceChange('')
+    handleDateChange('')
+    handleMediaChange('' as MediaFilter)
+    handleSortChange('newest')
+    setSearchQuery('')
+    resetAndReload()
+  }, [handleSourceChange, handleDateChange, handleMediaChange, handleSortChange, setSearchQuery, resetAndReload])
 
   const closeLightbox = useCallback(() => setLightboxImage(null), [])
   const handlePageChange = useCallback((p: number) => loadImages(p), [loadImages])
   const handleNovelBack = useCallback(() => setSelectedNovel(null), [])
 
   return (
-    <div className="archive-shell min-h-screen text-[var(--text)] transition-opacity duration-150" style={{ opacity: viewFade ? 0 : 1 }}>
+    <div className="archive-shell min-h-screen text-[var(--text)]">
+
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:absolute focus:top-4 focus:left-4 focus:z-50 focus:rounded-2xl focus:border focus:border-[var(--line-strong)] focus:bg-[var(--panel)] focus:px-4 focus:py-2 focus:text-sm focus:text-[var(--text)]"
+      >
+        跳到内容
+      </a>
       <Header view={view} onViewChange={handleViewChange} />
 
       {view === 'gallery' ? (
@@ -244,8 +194,10 @@ export default function App() {
             onModeChange={handleGalleryModeChangeWrapped}
             expanded={filterExpanded}
             onExpandedChange={setFilterExpanded}
+            searchQuery={searchQuery}
+            onSearchChange={handleSearchChange}
           />
-          <main className="mx-auto max-w-[1920px] px-3 py-4 pb-20 md:px-6 md:py-6 md:pb-6">
+          <main id="main-content" className="mx-auto max-w-[1920px] px-3 py-4 pb-20 md:px-6 md:py-6 md:pb-6">
             {error ? (
               <div className="px-4">
                 <EmptyState
@@ -263,13 +215,13 @@ export default function App() {
               </div>
             ) : (
               <>
-                <ImageGrid images={images} onImageClick={setLightboxImage} loading={loading} />
+                <ImageGrid images={displayImages} onImageClick={setLightboxImage} loading={loading} onClearFilters={clearAllFilters} />
                 {galleryMode === 'infinite' ? (
                   <LoadMoreTrigger
                     hasMore={hasMore}
                     loading={loadingMore}
                     onLoadMore={loadMore}
-                    summary={`已加载 ${images.length} / ${total} 张`}
+                    summary={`已加载 ${images.length} / ${total} 张${searchQuery ? ` · 匹配 ${displayImages.length} 项` : ''}`}
                     endText="全部加载完了"
                   />
                 ) : (
@@ -287,7 +239,7 @@ export default function App() {
           </main>
           <Lightbox
             image={lightboxImage}
-            images={images}
+            images={displayImages}
             onClose={closeLightbox}
             onNavigate={setLightboxImage}
           />
@@ -295,7 +247,7 @@ export default function App() {
       ) : (
         <>
           {view === 'novels' && (
-            <main>
+            <main id="main-content">
               <Suspense fallback={suspenseFallback}>
                 {selectedNovel ? (
                   <NovelReader novel={selectedNovel} onBack={handleNovelBack} />
@@ -357,6 +309,14 @@ export default function App() {
           <MobileNavButton active={view === 'stats'} label="统计" onClick={() => handleViewChange('stats')}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M18 20V10M12 20V4M6 20v-6" /></svg>
           </MobileNavButton>
+          <button
+            onClick={() => window.dispatchEvent(new CustomEvent('booru-shortcuts-open'))}
+            aria-label="快捷键帮助"
+            className="flex flex-1 flex-col items-center gap-0.5 py-2.5 text-xs text-[var(--muted)] transition-colors"
+          >
+            <span className="text-lg" aria-hidden="true">?</span>
+            <span>快捷键</span>
+          </button>
         </div>
       </nav>
     </div>
@@ -371,11 +331,14 @@ const MobileNavButton = React.memo(function MobileNavBtn({ active, label, childr
       onClick={onClick}
       aria-current={active ? 'page' : undefined}
       className={[
-        'flex flex-1 flex-col items-center gap-0.5 py-2.5 text-xs transition-colors',
+        'relative flex flex-1 flex-col items-center gap-0.5 py-2.5 text-xs transition-colors',
         active ? 'text-[var(--text)]' : 'text-[var(--muted)]',
       ].join(' ')}
     >
-      <span className="text-lg" aria-hidden="true">{children}</span>
+      <span className="text-lg relative" aria-hidden="true">
+        {children}
+        {active && <span className="absolute -top-0.5 -right-1.5 h-1.5 w-1.5 rounded-full bg-[var(--accent)]" />}
+      </span>
       <span>{label}</span>
     </button>
   )

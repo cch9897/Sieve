@@ -1,4 +1,4 @@
-import { BASE, ApiError, apiFetch, dedup } from './core'
+import { BASE, apiFetch, apiPost, dedup } from './core'
 
 // Prefetch
 export interface PrefetchStatus {
@@ -14,18 +14,14 @@ export async function fetchPrefetchStatus(signal?: AbortSignal): Promise<Prefetc
 }
 
 export async function startPrefetch(mode: PrefetchMode = 'tag+vision', threshold?: number, model?: string): Promise<PrefetchStatus> {
-  const sp = new URLSearchParams({ mode })
-  if (threshold !== undefined) sp.set('threshold', String(threshold))
-  if (model) sp.set('model', model)
-  const res = await fetch(`${BASE}/api/danbooru/prefetch/start?${sp}`, { method: 'POST' })
-  if (!res.ok) throw new ApiError(res.status, 'Failed to start prefetch')
-  return res.json()
+  const qs = new URLSearchParams({ mode })
+  if (threshold !== undefined) qs.set('threshold', String(threshold))
+  if (model) qs.set('model', model)
+  return apiPost(`${BASE}/api/danbooru/prefetch/start?${qs}`)
 }
 
 export async function stopPrefetch(): Promise<PrefetchStatus> {
-  const res = await fetch(`${BASE}/api/danbooru/prefetch/stop`, { method: 'POST' })
-  if (!res.ok) throw new ApiError(res.status, 'Failed to stop prefetch')
-  return res.json()
+  return apiPost(`${BASE}/api/danbooru/prefetch/stop`)
 }
 
 // GPU Inference Config
@@ -59,19 +55,11 @@ export async function fetchGpuConfig(signal?: AbortSignal): Promise<GpuConfig> {
 }
 
 export async function updateGpuConfig(cfg: Partial<{ url: string; batch_size: number; enabled: boolean }>): Promise<GpuConfig> {
-  const res = await fetch(`${BASE}/api/danbooru/gpu/config`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(cfg),
-  })
-  if (!res.ok) throw new ApiError(res.status, 'Failed to update GPU config')
-  return res.json()
+  return apiPost(`${BASE}/api/danbooru/gpu/config`, cfg)
 }
 
 export async function testGpuConnection(): Promise<GpuTestResult> {
-  const res = await fetch(`${BASE}/api/danbooru/gpu/test`, { method: 'POST' })
-  if (!res.ok) throw new ApiError(res.status, 'Failed to test GPU connection')
-  return res.json()
+  return apiPost(`${BASE}/api/danbooru/gpu/test`)
 }
 
 // Inference Mode APIs
@@ -106,16 +94,7 @@ export async function fetchInferenceStatus(signal?: AbortSignal): Promise<Infere
 }
 
 export async function setInferenceMode(mode: InferenceMode): Promise<InferenceModeResponse> {
-  const res = await fetch(`${BASE}/api/inference/mode`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ mode }),
-  })
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({ detail: res.statusText }))
-    throw new ApiError(res.status, data.detail || 'Failed to set inference mode')
-  }
-  return res.json()
+  return apiPost(`${BASE}/api/inference/mode`, { mode })
 }
 
 // ML Model Management APIs
@@ -155,9 +134,7 @@ export async function fetchMLModels(signal?: AbortSignal): Promise<MLModelsInfo>
 }
 
 export async function startRetrainXGBoost(): Promise<{ status: string }> {
-  const res = await fetch(`${BASE}/api/ml/retrain-xgboost`, { method: 'POST' })
-  if (!res.ok) throw new ApiError(res.status, 'Failed to start retrain')
-  return res.json()
+  return apiPost(`${BASE}/api/ml/retrain-xgboost`)
 }
 
 export async function fetchRetrainStatus(signal?: AbortSignal): Promise<MLTaskStatus> {
@@ -166,9 +143,7 @@ export async function fetchRetrainStatus(signal?: AbortSignal): Promise<MLTaskSt
 
 export async function startPackDataset(maxSize?: number): Promise<{ status: string }> {
   const sp = maxSize !== undefined ? `?max_size=${maxSize}` : ''
-  const res = await fetch(`${BASE}/api/ml/pack-dataset${sp}`, { method: 'POST' })
-  if (!res.ok) throw new ApiError(res.status, 'Failed to start packing')
-  return res.json()
+  return apiPost(`${BASE}/api/ml/pack-dataset${sp}`)
 }
 
 export async function fetchPackStatus(signal?: AbortSignal): Promise<MLTaskStatus> {
@@ -176,13 +151,7 @@ export async function fetchPackStatus(signal?: AbortSignal): Promise<MLTaskStatu
 }
 
 export async function startVisionScore(model?: string): Promise<{ status: string }> {
-  const res = await fetch(`${BASE}/api/ml/vision-score`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: model || null }),
-  })
-  if (!res.ok) throw new ApiError(res.status, 'Failed to start vision scoring')
-  return res.json()
+  return apiPost(`${BASE}/api/ml/vision-score`, { model: model || null })
 }
 
 export async function fetchVisionScoreStatus(signal?: AbortSignal): Promise<MLTaskStatus> {
@@ -190,9 +159,7 @@ export async function fetchVisionScoreStatus(signal?: AbortSignal): Promise<MLTa
 }
 
 export async function startTagTrain(): Promise<{ status: string }> {
-  const res = await fetch(`${BASE}/api/ml/tag-train`, { method: 'POST' })
-  if (!res.ok) throw new ApiError(res.status, 'Failed to start tag train')
-  return res.json()
+  return apiPost(`${BASE}/api/ml/tag-train`)
 }
 
 export async function fetchTagTrainStatus(signal?: AbortSignal): Promise<MLTaskStatus> {
@@ -221,13 +188,7 @@ export async function fetchVisionModels(signal?: AbortSignal): Promise<ModelsRes
 }
 
 export async function setActiveModel(modelKey: string): Promise<{ active_model: string }> {
-  const res = await fetch(`${BASE}/api/models/active`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model_key: modelKey }),
-  })
-  if (!res.ok) throw new ApiError(res.status, 'Failed to set active model')
-  return res.json()
+  return apiPost(`${BASE}/api/models/active`, { model_key: modelKey })
 }
 
 export interface VisionScoreCompare {

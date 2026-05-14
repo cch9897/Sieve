@@ -20,24 +20,10 @@ export function useGalleryFilters(initial: PersistedState) {
   const [galleryMode, setGalleryMode] = useState<GalleryMode>(initial.galleryMode)
   const [pageByMode, setPageByMode] = useState<Record<GalleryMode, number>>(initial.pageByMode)
 
-  const resetGalleryAndReload = useCallback((patch?: Partial<{
-    selectedSource: string
-    selectedDate: string
-    selectedMedia: MediaFilter
-    sort: string
-  }>) => {
-    if (patch?.selectedSource !== undefined) setSelectedSource(patch.selectedSource)
-    if (patch?.selectedDate !== undefined) setSelectedDate(patch.selectedDate)
-    if (patch?.selectedMedia !== undefined) setSelectedMedia(patch.selectedMedia)
-    if (patch?.sort !== undefined) setSort(patch.sort)
-    setPageByMode(prev => ({ ...prev, [galleryMode]: 1 }))
-    window.scrollTo({ top: 0, behavior: 'auto' })
-  }, [galleryMode])
-
-  const handleSourceChange = useCallback((s: string) => resetGalleryAndReload({ selectedSource: s }), [resetGalleryAndReload])
-  const handleDateChange = useCallback((d: string) => resetGalleryAndReload({ selectedDate: d }), [resetGalleryAndReload])
-  const handleMediaChange = useCallback((m: MediaFilter) => resetGalleryAndReload({ selectedMedia: m }), [resetGalleryAndReload])
-  const handleSortChange = useCallback((s: string) => resetGalleryAndReload({ sort: s }), [resetGalleryAndReload])
+  const handleSourceChange = useCallback((s: string) => setSelectedSource(s), [])
+  const handleDateChange = useCallback((d: string) => setSelectedDate(d), [])
+  const handleMediaChange = useCallback((m: MediaFilter) => setSelectedMedia(m), [])
+  const handleSortChange = useCallback((s: string) => setSort(s), [])
 
   const handleGalleryModeChange = useCallback((mode: GalleryMode) => {
     if (galleryMode === mode) return

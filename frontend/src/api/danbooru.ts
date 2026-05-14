@@ -1,64 +1,21 @@
-import { BASE, buildQuery, ApiError, apiFetch, dedup } from './core'
+import type {
+  DanbooruImage,
+  DanbooruLabelerNextResponse,
+  DanbooruLabelerStats,
+  DanbooruLabeledImage,
+  DanbooruLabelerHistoryResponse,
+  DanbooruRecommendedResponse,
+} from '../types'
+import { BASE, buildQuery, buildExportUrl, apiFetch, apiPost, apiDelete, dedup } from './core'
 
-export interface DanbooruImage {
-  id: number
-  ext: string
-  score: number
-  rating: string
-  created_at: string
-  file_size: number
-  tags: string
-  tag_categories: Record<string, string[]>
-  is_video: boolean
-  thumb_url: string
-  preview_url: string
-  video_url: string | null
-  preference_score?: number
-  aesthetic_score?: number
-  tag_score?: number
-}
-
-export interface DanbooruLabelerNextResponse {
-  image: DanbooruImage | null
-  remaining: number
-  total_labeled: number
-}
-
-export interface DanbooruLabelerStats {
-  total_images: number
-  liked: number
-  disliked: number
-  skipped: number
-  total_labeled: number
-  remaining: number
-  top_tags: { tag: string; count: number }[]
-  liked_by_rating: Record<string, number>
-  labeled_by_rating: Record<string, number>
-  rating_distribution: Record<string, Record<string, number>>
-  liked_top_danbooru_tags: { tag: string; count: number }[]
-}
-export interface DanbooruLabeledImage {
-  id: number
-  ext: string
-  score: number
-  rating: string
-  danbooru_tags: string
-  is_video: boolean
-  thumb_url: string
-  preview_url: string
-  video_url: string | null
-  verdict: string
-  updated_at: string
-  tags: string[]
-  vision_score?: number | null
-}
-
-export interface DanbooruLabelerHistoryResponse {
-  images: DanbooruLabeledImage[]
-  total: number
-  page: number
-  per_page: number
-  pages: number
+// Re-export for backwards compat with existing barrel imports from '../api'.
+export type {
+  DanbooruImage,
+  DanbooruLabelerNextResponse,
+  DanbooruLabelerStats,
+  DanbooruLabeledImage,
+  DanbooruLabelerHistoryResponse,
+  DanbooruRecommendedResponse,
 }
 
 export async function fetchDanbooruLabelerNext(params?: {
@@ -76,26 +33,18 @@ export async function danbooruLabelImage(
   tags: string[] = [],
   meta?: { ext?: string; score?: number; rating?: string; danbooru_tags?: string }
 ): Promise<{ ok: boolean }> {
-  const res = await fetch(`${BASE}/api/danbooru/labeler/${imageId}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      verdict,
-      tags,
-      ext: meta?.ext || '',
-      score: meta?.score || 0,
-      rating: meta?.rating || '',
-      danbooru_tags: meta?.danbooru_tags || '',
-    }),
+  return apiPost(`${BASE}/api/danbooru/labeler/${imageId}`, {
+    verdict,
+    tags,
+    ext: meta?.ext || '',
+    score: meta?.score || 0,
+    rating: meta?.rating || '',
+    danbooru_tags: meta?.danbooru_tags || '',
   })
-  if (!res.ok) throw new ApiError(res.status, `Label failed: ${res.statusText}`)
-  return res.json()
 }
 
 export async function danbooruUnlabelImage(imageId: number): Promise<{ ok: boolean }> {
-  const res = await fetch(`${BASE}/api/danbooru/labeler/${imageId}`, { method: 'DELETE' })
-  if (!res.ok) throw new ApiError(res.status, `Unlabel failed: ${res.statusText}`)
-  return res.json()
+  return apiDelete(`${BASE}/api/danbooru/labeler/${imageId}`)
 }
 
 export async function fetchDanbooruLabelerStats(signal?: AbortSignal): Promise<DanbooruLabelerStats> {
@@ -112,16 +61,6 @@ export async function fetchDanbooruLabelerHistory(params?: {
   return apiFetch(`${BASE}/api/danbooru/labeler/history?${qs}`, signal)
 }
 
-// AI Recommended
-export interface DanbooruRecommendedResponse {
-  images: (DanbooruLabeledImage & { preference_score: number })[]
-  total: number
-  page: number
-  per_page: number
-  pages: number
-  model_info: { auc: number; n_samples: number; model_type: string }
-}
-
 export async function fetchDanbooruRecommended(params: {
   page?: number
   per_page?: number
@@ -131,6 +70,9 @@ export async function fetchDanbooruRecommended(params: {
   const qs = buildQuery(params as Record<string, string | number | undefined>)
   return apiFetch(`${BASE}/api/danbooru/recommended?${qs}`, signal)
 }
+
+// --- Candidate-screening types (kept here: only used inside the danbooru
+// pre-screening UI; not part of the labeler core schema). -------------------
 
 export interface HistogramBin {
   lo: number
@@ -185,14 +127,11 @@ export async function fetchDanbooruCandidateNext(params: {
 }
 
 export async function markDanbooruCandidate(imageId: number): Promise<void> {
-  const res = await fetch(`${BASE}/api/danbooru/candidates/${imageId}/mark`, { method: 'POST' })
-  if (!res.ok) throw new ApiError(res.status, 'Failed to mark candidate')
+  await apiPost(`${BASE}/api/danbooru/candidates/${imageId}/mark`)
 }
 
 export async function clearDanbooruCandidates(): Promise<{ ok: boolean; deleted: number }> {
-  const res = await fetch(`${BASE}/api/danbooru/candidates/clear`, { method: 'POST' })
-  if (!res.ok) throw new ApiError(res.status, 'Failed to clear candidates')
-  return res.json()
+  return apiPost(`${BASE}/api/danbooru/candidates/clear`)
 }
 
 export interface RescoreStatus {
@@ -201,9 +140,7 @@ export interface RescoreStatus {
 }
 
 export async function startCandidatesRescore(): Promise<{ status: string; model?: string }> {
-  const res = await fetch(`${BASE}/api/danbooru/candidates/rescore`, { method: 'POST' })
-  if (!res.ok) throw new ApiError(res.status, 'Failed to start rescore')
-  return res.json()
+  return apiPost(`${BASE}/api/danbooru/candidates/rescore`)
 }
 
 export async function fetchRescoreStatus(signal?: AbortSignal): Promise<RescoreStatus> {
@@ -211,14 +148,9 @@ export async function fetchRescoreStatus(signal?: AbortSignal): Promise<RescoreS
 }
 
 export async function stopCandidatesRescore(): Promise<{ stopped: boolean }> {
-  const res = await fetch(`${BASE}/api/danbooru/candidates/rescore/stop`, { method: 'POST' })
-  if (!res.ok) throw new ApiError(res.status, 'Failed to stop rescore')
-  return res.json()
+  return apiPost(`${BASE}/api/danbooru/candidates/rescore/stop`)
 }
 
 export function getDanbooruExportUrl(verdict = 'liked', tag?: string, maxSize?: number): string {
-  const sp = new URLSearchParams({ verdict })
-  if (tag) sp.set('tag', tag)
-  if (maxSize !== undefined) sp.set('max_size', String(maxSize))
-  return `${BASE}/api/danbooru/labeler/export?${sp}`
+  return buildExportUrl('/api/danbooru/labeler/export', { verdict, tag, max_size: maxSize })
 }

@@ -1,4 +1,4 @@
-import { BASE, buildQuery, ApiError, apiFetch, dedup } from './core'
+import { BASE, buildQuery, apiFetch, apiPost, dedup } from './core'
 
 export interface AutoTagsDetail {
   found: boolean
@@ -52,12 +52,5 @@ export async function searchByAutoTag(params: {
 }
 
 export async function fetchAutoTagsBatch(ids: number[], signal?: AbortSignal): Promise<AutoTagsBatchResponse> {
-  const res = await fetch(`${BASE}/api/autotags/batch`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ids }),
-    signal,
-  })
-  if (!res.ok) throw new ApiError(res.status, `Request failed: ${res.statusText}`)
-  return res.json()
+  return apiPost(`${BASE}/api/autotags/batch`, { ids }, signal)
 }
