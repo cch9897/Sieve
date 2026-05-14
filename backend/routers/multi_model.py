@@ -33,7 +33,9 @@ class SetActiveModelRequest(BaseModel):
 async def set_active_model(req: SetActiveModelRequest):
     """Switch the active model for scoring and display."""
     if req.model_key not in state._models:
-        raise HTTPException(status_code=400, detail=f"Unknown model: {req.model_key}. Available: {list(state._models.keys())}")
+        raise HTTPException(
+            status_code=400, detail=f"Unknown model: {req.model_key}. Available: {list(state._models.keys())}"
+        )
     with state._active_model_lock:
         state._active_model = req.model_key
     return {"active_model": state._active_model}

@@ -48,6 +48,7 @@ async def serve_thumbnail(file_path: str, request: Request):
     """Serve cached thumbnail, generate in thread pool if missing."""
     source_path: Path | None = None
     from urllib.parse import quote
+
     for candidate in [file_path, quote(file_path, safe="/")]:
         full = CRAWLER_DIR / candidate
         if _safe_under_crawler(full) and full.exists():
@@ -76,9 +77,7 @@ async def serve_thumbnail(file_path: str, request: Request):
     # Generate thumbnail in thread pool (non-blocking)
     try:
         loop = asyncio.get_running_loop()
-        thumb_path = await loop.run_in_executor(
-            state._image_executor, _generate_thumb, source_path, thumb_base
-        )
+        thumb_path = await loop.run_in_executor(state._image_executor, _generate_thumb, source_path, thumb_base)
         return FileResponse(
             thumb_path,
             headers={"Cache-Control": "public, max-age=86400, immutable"},

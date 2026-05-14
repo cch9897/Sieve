@@ -68,22 +68,24 @@ async def list_novels(
             fp = r["file_path"]
             novel_date = extract_date_from_path(fp)
 
-            novels.append({
-                "id": r["id"],
-                "source": r["source"],
-                "source_id": r["source_id"],
-                "title": r["title"] or meta.get("title", ""),
-                "author": r["author"] or meta.get("author", ""),
-                "date": novel_date,
-                "url": r["url"],
-                "created_at": r["created_at"],
-                "text_length": meta.get("text_length", 0),
-                "total_bookmarks": meta.get("total_bookmarks", 0),
-                "total_view": meta.get("total_view", 0),
-                "tags": meta.get("tags", []),
-                "series_title": meta.get("series_title"),
-                "r18": meta.get("r18", False),
-            })
+            novels.append(
+                {
+                    "id": r["id"],
+                    "source": r["source"],
+                    "source_id": r["source_id"],
+                    "title": r["title"] or meta.get("title", ""),
+                    "author": r["author"] or meta.get("author", ""),
+                    "date": novel_date,
+                    "url": r["url"],
+                    "created_at": r["created_at"],
+                    "text_length": meta.get("text_length", 0),
+                    "total_bookmarks": meta.get("total_bookmarks", 0),
+                    "total_view": meta.get("total_view", 0),
+                    "tags": meta.get("tags", []),
+                    "series_title": meta.get("series_title"),
+                    "r18": meta.get("r18", False),
+                }
+            )
 
         if sort == "bookmarks":
             novels.sort(key=lambda n: n["total_bookmarks"], reverse=True)
@@ -92,11 +94,14 @@ async def list_novels(
         elif sort == "length":
             novels.sort(key=lambda n: n["text_length"], reverse=True)
 
-        novels = novels[offset:offset + per_page]
+        novels = novels[offset : offset + per_page]
     else:
         sql = f"""SELECT id, source, source_id, title, author, file_path, url, created_at
                   FROM novels WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?"""
-        async with db.execute(count_sql, params) as count_cursor, db.execute(sql, params + [per_page, offset]) as list_cursor:
+        async with (
+            db.execute(count_sql, params) as count_cursor,
+            db.execute(sql, params + [per_page, offset]) as list_cursor,
+        ):
             total_row, rows = await count_cursor.fetchone(), await list_cursor.fetchall()
             total = total_row[0]
 
@@ -109,22 +114,24 @@ async def list_novels(
             fp = r["file_path"]
             novel_date = extract_date_from_path(fp)
 
-            novels.append({
-                "id": r["id"],
-                "source": r["source"],
-                "source_id": r["source_id"],
-                "title": r["title"] or meta.get("title", ""),
-                "author": r["author"] or meta.get("author", ""),
-                "date": novel_date,
-                "url": r["url"],
-                "created_at": r["created_at"],
-                "text_length": meta.get("text_length", 0),
-                "total_bookmarks": meta.get("total_bookmarks", 0),
-                "total_view": meta.get("total_view", 0),
-                "tags": meta.get("tags", []),
-                "series_title": meta.get("series_title"),
-                "r18": meta.get("r18", False),
-            })
+            novels.append(
+                {
+                    "id": r["id"],
+                    "source": r["source"],
+                    "source_id": r["source_id"],
+                    "title": r["title"] or meta.get("title", ""),
+                    "author": r["author"] or meta.get("author", ""),
+                    "date": novel_date,
+                    "url": r["url"],
+                    "created_at": r["created_at"],
+                    "text_length": meta.get("text_length", 0),
+                    "total_bookmarks": meta.get("total_bookmarks", 0),
+                    "total_view": meta.get("total_view", 0),
+                    "tags": meta.get("tags", []),
+                    "series_title": meta.get("series_title"),
+                    "r18": meta.get("r18", False),
+                }
+            )
 
     return {
         "novels": novels,

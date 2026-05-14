@@ -61,7 +61,7 @@ async def _auto_tags_stats_cached():
         async with ldb.execute("SELECT image_id FROM auto_tags WHERE top_tags = '_error'") as c:
             error_ids = [r[0] for r in await c.fetchall()]
         for i in range(0, len(error_ids), 500):
-            batch = error_ids[i:i+500]
+            batch = error_ids[i : i + 500]
             placeholders = ",".join("?" * len(batch))
             async with db.execute(
                 f"SELECT source, COUNT(*) FROM images WHERE id IN ({placeholders}) GROUP BY source",
@@ -97,9 +97,7 @@ async def search_by_auto_tag(
     pattern = f"%{escaped_tag}%"
     offset = (page - 1) * per_page
 
-    async with ldb.execute(
-        "SELECT COUNT(*) FROM auto_tags WHERE top_tags LIKE ? ESCAPE '\\'", [pattern]
-    ) as c:
+    async with ldb.execute("SELECT COUNT(*) FROM auto_tags WHERE top_tags LIKE ? ESCAPE '\\'", [pattern]) as c:
         total = (await c.fetchone())[0]
 
     async with ldb.execute(
@@ -131,16 +129,18 @@ async def search_by_auto_tag(
         fp = r["file_path"]
         ext = Path(fp).suffix.lower() if fp else ""
         parts = (fp or "").split("/")
-        images.append({
-            "id": r["id"],
-            "source": r["source"],
-            "file_path": fp,
-            "created_at": r["created_at"],
-            "date": parts[1] if len(parts) >= 2 else None,
-            "is_video": ext in VIDEO_EXTS,
-            "thumb_url": f"/api/thumb/{fp}",
-            "auto_tags": tags_map.get(iid, ""),
-        })
+        images.append(
+            {
+                "id": r["id"],
+                "source": r["source"],
+                "file_path": fp,
+                "created_at": r["created_at"],
+                "date": parts[1] if len(parts) >= 2 else None,
+                "is_video": ext in VIDEO_EXTS,
+                "thumb_url": f"/api/thumb/{fp}",
+                "auto_tags": tags_map.get(iid, ""),
+            }
+        )
 
     return {
         "images": images,

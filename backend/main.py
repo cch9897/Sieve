@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import sqlite3
@@ -77,10 +78,12 @@ async def lifespan(app: FastAPI):
     # Load preference models (in thread to avoid blocking event loop)
     if PREFERENCE_MODEL_PATH.exists():
         try:
-            import asyncio
             state._preference_model = await asyncio.to_thread(joblib.load, PREFERENCE_MODEL_PATH)
-            logger.info("[preference] XGBoost loaded: AUC=%.4f, vocab=%d tags",
-                        state._preference_model['auc'], len(state._preference_model['tag_vocab']))
+            logger.info(
+                "[preference] XGBoost loaded: AUC=%.4f, vocab=%d tags",
+                state._preference_model["auc"],
+                len(state._preference_model["tag_vocab"]),
+            )
         except Exception as e:
             logger.warning("[preference] Failed to load XGBoost: %s", e)
             state._preference_model = None
@@ -94,61 +97,76 @@ async def lifespan(app: FastAPI):
     def _scan_pt_models():
         import gc
         import glob as _glob
+
         classifier_dir = PROJECT_ROOT / "classifier"
         pt_files = sorted(_glob.glob(str(classifier_dir / "*.pt")))
-        pt_files = [f for f in pt_files if not f.endswith('.bak.pt')]
+        pt_files = [f for f in pt_files if not f.endswith(".bak.pt")]
         logger.info("[models] Scanning %s: found %d .pt files", classifier_dir, len(pt_files))
 
         for pt_path in pt_files:
             pt_name = Path(pt_path).stem
             try:
                 import torch
+
                 try:
                     checkpoint = torch.load(pt_path, map_location="cpu", weights_only=True)
                 except Exception:
                     checkpoint = torch.load(pt_path, map_location="cpu", weights_only=False)
-                model_class = checkpoint.get('model_class', 'timm')
-                model_name = checkpoint.get('model_name', pt_name)
+                model_class = checkpoint.get("model_class", "timm")
+                model_name = checkpoint.get("model_name", pt_name)
 
-                if model_class == 'NaFlexClassifier':
-                    num_features = checkpoint.get('num_features', 1152)
+                if model_class == "NaFlexClassifier":
+                    num_features = checkpoint.get("num_features", 1152)
                     state._models[pt_name] = {
-                        'model': None, 'transform': None, 'processor': None,
-                        'type': 'siglip2',
-                        'cv_auc': checkpoint.get('cv_auc', 0),
-                        'n_samples': checkpoint.get('n_samples', 0),
-                        'model_name': model_name,
-                        'model_class': 'NaFlexClassifier',
-                        'input_size': 'variable',
-                        'num_features': num_features,
-                        'fold_aucs': checkpoint.get('fold_aucs', []),
-                        'max_num_patches': checkpoint.get('max_num_patches', 256),
-                        'source_file': Path(pt_path).name,
-                        '_pt_path': pt_path,
+                        "model": None,
+                        "transform": None,
+                        "processor": None,
+                        "type": "siglip2",
+                        "cv_auc": checkpoint.get("cv_auc", 0),
+                        "n_samples": checkpoint.get("n_samples", 0),
+                        "model_name": model_name,
+                        "model_class": "NaFlexClassifier",
+                        "input_size": "variable",
+                        "num_features": num_features,
+                        "fold_aucs": checkpoint.get("fold_aucs", []),
+                        "max_num_patches": checkpoint.get("max_num_patches", 256),
+                        "source_file": Path(pt_path).name,
+                        "_pt_path": pt_path,
                     }
                     if state._active_model is None:
                         state._active_model = pt_name
-                    logger.info("[models] Registered %s: %s (NaFlexClassifier), AUC=%.4f [lazy]",
-                                pt_name, model_name, checkpoint.get('cv_auc', 0))
+                    logger.info(
+                        "[models] Registered %s: %s (NaFlexClassifier), AUC=%.4f [lazy]",
+                        pt_name,
+                        model_name,
+                        checkpoint.get("cv_auc", 0),
+                    )
 
-                elif model_class in ('PreferenceModel', 'timm'):
-                    input_size = checkpoint.get('input_size', 224)
+                elif model_class in ("PreferenceModel", "timm"):
+                    input_size = checkpoint.get("input_size", 224)
                     state._models[pt_name] = {
-                        'model': None, 'transform': None, 'processor': None,
-                        'type': 'timm',
-                        'cv_auc': checkpoint.get('cv_auc', 0),
-                        'n_samples': checkpoint.get('n_samples', 0),
-                        'model_name': model_name,
-                        'model_class': model_class,
-                        'input_size': input_size,
-                        'fold_aucs': checkpoint.get('fold_aucs', []),
-                        'source_file': Path(pt_path).name,
-                        '_pt_path': pt_path,
+                        "model": None,
+                        "transform": None,
+                        "processor": None,
+                        "type": "timm",
+                        "cv_auc": checkpoint.get("cv_auc", 0),
+                        "n_samples": checkpoint.get("n_samples", 0),
+                        "model_name": model_name,
+                        "model_class": model_class,
+                        "input_size": input_size,
+                        "fold_aucs": checkpoint.get("fold_aucs", []),
+                        "source_file": Path(pt_path).name,
+                        "_pt_path": pt_path,
                     }
                     if state._active_model is None:
                         state._active_model = pt_name
-                    logger.info("[models] Registered %s: %s (%s), AUC=%.4f [lazy]",
-                                pt_name, model_name, model_class, checkpoint.get('cv_auc', 0))
+                    logger.info(
+                        "[models] Registered %s: %s (%s), AUC=%.4f [lazy]",
+                        pt_name,
+                        model_name,
+                        model_class,
+                        checkpoint.get("cv_auc", 0),
+                    )
                 else:
                     logger.warning("[models] Skipping %s: unknown model_class '%s'", pt_name, model_class)
 
@@ -157,45 +175,33 @@ async def lifespan(app: FastAPI):
                 logger.warning("[models] Failed to scan %s: %s", pt_name, e)
 
         gc.collect()
-        logger.info("[models] Registered models: %s, active: %s (lazy loading enabled)",
-                     list(state._models.keys()), state._active_model)
+        logger.info(
+            "[models] Registered models: %s, active: %s (lazy loading enabled)",
+            list(state._models.keys()),
+            state._active_model,
+        )
 
     await asyncio.to_thread(_scan_pt_models)
 
     with get_sync_db(readonly=False) as conn:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_images_file_created_at ON images(file_path, created_at DESC)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_images_source_file_created_at ON images(source, file_path, created_at DESC)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_images_source_file_created_at ON images(source, file_path, created_at DESC)"
+        )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_novels_file_created_at ON novels(file_path, created_at DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_novels_title_author ON novels(title, author)")
 
     if CANDIDATES_DB_PATH.exists():
         with sqlite3.connect(str(CANDIDATES_DB_PATH), timeout=30) as cconn:
             cconn.execute("PRAGMA journal_mode=WAL")
-            cconn.execute("CREATE INDEX IF NOT EXISTS idx_candidates_status_score ON candidates(status, preference_score DESC)")
+            cconn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_candidates_status_score ON candidates(status, preference_score DESC)"
+            )
 
     yield
-    # Terminate any running subprocesses
-    for proc_attr, fh_attr in [
-        ('_prefetch_process', '_prefetch_log_fh'),
-        ('_rescore_process', '_rescore_log_fh'),
-        ('_retrain_process', '_retrain_log_fh'),
-        ('_pack_process', '_pack_log_fh'),
-        ('_vscore_process', '_vscore_log_fh'),
-        ('_tag_train_process', '_tag_train_log_fh'),
-    ]:
-        proc = getattr(state, proc_attr, None)
-        if proc is not None and proc.poll() is None:
-            try:
-                proc.terminate()
-                proc.wait(timeout=5)
-            except Exception:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
-        fh = getattr(state, fh_attr, None)
-        if fh and not fh.closed:
-            fh.close()
+    # Terminate any running subprocesses tracked by ManagedSubprocess instances.
+    for proc_mgr in state._subprocesses.values():
+        await proc_mgr.cleanup()
 
     if state._db_pool is not None:
         await state._db_pool.close()
@@ -206,6 +212,9 @@ async def lifespan(app: FastAPI):
     if state._danbooru_labels_pool is not None:
         await state._danbooru_labels_pool.close()
         state._danbooru_labels_pool = None
+    if state._candidates_pool is not None:
+        await state._candidates_pool.close()
+        state._candidates_pool = None
     if state._danbooru_client is not None:
         await state._danbooru_client.aclose()
         state._danbooru_client = None
@@ -222,6 +231,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 class MaxBodySizeMiddleware:
     def __init__(self, app, max_size: int = 1_000_000):
@@ -241,17 +251,22 @@ class MaxBodySizeMiddleware:
                     pass
                 break
         if content_length > self.max_size:
-            await send({
-                "type": "http.response.start",
-                "status": 413,
-                "headers": [(b"content-type", b"application/json")],
-            })
-            await send({
-                "type": "http.response.body",
-                "body": b'{"detail":"Request body too large"}',
-            })
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 413,
+                    "headers": [(b"content-type", b"application/json")],
+                }
+            )
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": b'{"detail":"Request body too large"}',
+                }
+            )
             return
         await self.app(scope, receive, send)
+
 
 app.add_middleware(MaxBodySizeMiddleware, max_size=1_000_000)
 
@@ -277,6 +292,7 @@ app.include_router(danbooru_labeler.router)
 # Static file serving
 # ---------------------------------------------------------------------------
 
+
 @app.get("/images/{file_path:path}")
 async def serve_image(file_path: str, request: Request):
     for candidate in [file_path, quote(file_path, safe="/")]:
@@ -301,4 +317,5 @@ if FRONTEND_DIST.exists():
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run("main:app", host=HOST, port=PORT, reload=True)

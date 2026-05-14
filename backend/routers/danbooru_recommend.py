@@ -25,7 +25,7 @@ async def danbooru_recommended(
     if state._preference_model is None:
         raise HTTPException(status_code=503, detail="Preference model not loaded")
 
-    model = state._preference_model['model']
+    model = state._preference_model["model"]
     client = get_danbooru_client()
 
     # Fetch multiple pages from DanbooruFinder in parallel (200 images)
@@ -73,10 +73,12 @@ async def danbooru_recommended(
 
     # Build features and predict (CPU-bound, run in thread)
     def _predict():
-        X = np.array([
-            _build_preference_features(img.get("tags", ""), img.get("rating", ""), state._preference_model)
-            for img in unlabeled
-        ])
+        X = np.array(
+            [
+                _build_preference_features(img.get("tags", ""), img.get("rating", ""), state._preference_model)
+                for img in unlabeled
+            ]
+        )
         return model.predict_proba(X)[:, 1]
 
     probas = await asyncio.to_thread(_predict)
@@ -87,21 +89,23 @@ async def danbooru_recommended(
         if prob >= min_score:
             ext = img.get("ext", "jpg")
             is_video = ext in ("mp4", "webm", "zip")
-            scored.append({
-                "id": img["id"],
-                "ext": ext,
-                "score": img.get("score", 0),
-                "rating": img.get("rating", ""),
-                "danbooru_tags": img.get("tags", ""),
-                "is_video": is_video,
-                "thumb_url": f"/api/danbooru/thumbnail/{img['id']}.{ext}",
-                "preview_url": f"/api/danbooru/preview/{img['id']}.{ext}",
-                "video_url": f"/api/danbooru/video_preview/{img['id']}.{ext}" if is_video else None,
-                "verdict": "",
-                "updated_at": "",
-                "tags": [],
-                "preference_score": float(prob),
-            })
+            scored.append(
+                {
+                    "id": img["id"],
+                    "ext": ext,
+                    "score": img.get("score", 0),
+                    "rating": img.get("rating", ""),
+                    "danbooru_tags": img.get("tags", ""),
+                    "is_video": is_video,
+                    "thumb_url": f"/api/danbooru/thumbnail/{img['id']}.{ext}",
+                    "preview_url": f"/api/danbooru/preview/{img['id']}.{ext}",
+                    "video_url": f"/api/danbooru/video_preview/{img['id']}.{ext}" if is_video else None,
+                    "verdict": "",
+                    "updated_at": "",
+                    "tags": [],
+                    "preference_score": float(prob),
+                }
+            )
 
     # Sort by preference score descending
     scored.sort(key=lambda x: x["preference_score"], reverse=True)
@@ -110,7 +114,7 @@ async def danbooru_recommended(
     total = len(scored)
     pages_total = (total + per_page - 1) // per_page if total > 0 else 0
     offset = (page - 1) * per_page
-    page_items = scored[offset:offset + per_page]
+    page_items = scored[offset : offset + per_page]
 
     return {
         "images": page_items,
@@ -134,7 +138,9 @@ async def danbooru_candidates_stats():
     """Get AI pre-screening candidate statistics."""
     if not CANDIDATES_DB_PATH.exists():
         return {
-            "total": 0, "pending": 0, "labeled": 0,
+            "total": 0,
+            "pending": 0,
+            "labeled": 0,
             "score_distribution": {},
             "rating_distribution": {},
             "model_loaded": state._preference_model is not None,
@@ -154,10 +160,17 @@ async def danbooru_candidates_stats():
 
         # Score distribution (buckets)
         score_dist = {}
-        for lo, hi, label in [(0.9, 1.01, "90-100%"), (0.8, 0.9, "80-90%"),
-                               (0.7, 0.8, "70-80%"), (0.6, 0.7, "60-70%"),
-                               (0.5, 0.6, "50-60%"), (0.0, 0.5, "<50%")]:
-            cur.execute("SELECT COUNT(*) FROM candidates WHERE preference_score >= ? AND preference_score < ?", (lo, hi))
+        for lo, hi, label in [
+            (0.9, 1.01, "90-100%"),
+            (0.8, 0.9, "80-90%"),
+            (0.7, 0.8, "70-80%"),
+            (0.6, 0.7, "60-70%"),
+            (0.5, 0.6, "50-60%"),
+            (0.0, 0.5, "<50%"),
+        ]:
+            cur.execute(
+                "SELECT COUNT(*) FROM candidates WHERE preference_score >= ? AND preference_score < ?", (lo, hi)
+            )
             cnt = cur.fetchone()[0]
             if cnt > 0:
                 score_dist[label] = cnt
@@ -177,6 +190,7 @@ async def danbooru_candidates_stats():
         # Fine-grained histogram (40 bins from 0 to 1) + confidence interval
         # Use score_log (all scored images) if available, fallback to candidates only
         import math as _math
+
         num_bins = 40
         bin_width = 1.0 / num_bins
 
@@ -216,12 +230,15 @@ async def danbooru_candidates_stats():
         for i in range(num_bins):
             lo = round(i * bin_width, 4)
             hi = round((i + 1) * bin_width, 4)
-            histogram_bins.append({
-                "lo": lo, "hi": hi,
-                "count": bin_accepted[i] + bin_rejected[i],
-                "accepted": bin_accepted[i],
-                "rejected": bin_rejected[i],
-            })
+            histogram_bins.append(
+                {
+                    "lo": lo,
+                    "hi": hi,
+                    "count": bin_accepted[i] + bin_rejected[i],
+                    "accepted": bin_accepted[i],
+                    "rejected": bin_rejected[i],
+                }
+            )
 
         # Stats for confidence interval
         ci_stats = {}
@@ -245,11 +262,24 @@ async def danbooru_candidates_stats():
                 "n": n,
             }
         elif n == 1:
-            ci_stats = {"mean": round(all_scores[0], 4), "std": 0, "ci95_lo": round(all_scores[0], 4), "ci95_hi": round(all_scores[0], 4), "median": round(all_scores[0], 4), "p25": round(all_scores[0], 4), "p75": round(all_scores[0], 4), "p10": round(all_scores[0], 4), "p90": round(all_scores[0], 4), "n": 1}
+            ci_stats = {
+                "mean": round(all_scores[0], 4),
+                "std": 0,
+                "ci95_lo": round(all_scores[0], 4),
+                "ci95_hi": round(all_scores[0], 4),
+                "median": round(all_scores[0], 4),
+                "p25": round(all_scores[0], 4),
+                "p75": round(all_scores[0], 4),
+                "p10": round(all_scores[0], 4),
+                "p90": round(all_scores[0], 4),
+                "n": 1,
+            }
 
         conn.close()
         return {
-            "total": total, "pending": pending, "labeled": labeled,
+            "total": total,
+            "pending": pending,
+            "labeled": labeled,
             "score_distribution": score_dist,
             "rating_distribution": rating_dist,
             "avg_score": round(avg, 4),
@@ -263,7 +293,9 @@ async def danbooru_candidates_stats():
             "model_auc": state._preference_model.get("auc", 0) if state._preference_model else 0,
             "model_samples": state._preference_model.get("n_samples", 0) if state._preference_model else 0,
             "cnn_loaded": bool(state._models),
-            "cnn_auc": state._models[state._active_model].get('cv_auc', 0) if state._active_model and state._active_model in state._models else 0,
+            "cnn_auc": state._models[state._active_model].get("cv_auc", 0)
+            if state._active_model and state._active_model in state._models
+            else 0,
             "active_model": state._active_model,
             "vision_models": {
                 k: {

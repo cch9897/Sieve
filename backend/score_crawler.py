@@ -25,10 +25,13 @@ logging.basicConfig(
 
 # Graceful shutdown
 _shutdown = False
+
+
 def _handle_signal(signum, frame):
     global _shutdown
     _shutdown = True
     logger.info("Received signal %d, finishing current batch...", signum)
+
 
 signal.signal(signal.SIGTERM, _handle_signal)
 signal.signal(signal.SIGINT, _handle_signal)
@@ -38,6 +41,7 @@ _PROJECT_ROOT = _BACKEND_DIR.parent
 
 try:
     from dotenv import load_dotenv
+
     load_dotenv(_PROJECT_ROOT / ".env")
 except ImportError:
     pass
@@ -52,13 +56,19 @@ CLASSIFIER_DIR = _PROJECT_ROOT / "classifier"
 
 # Legacy env vars (single model paths) — still respected if set
 _cnn_path = os.environ.get("CNN_MODEL_PATH", "")
-CNN_MODEL_PATH = (Path(_cnn_path) if Path(_cnn_path).is_absolute() else _PROJECT_ROOT / _cnn_path) if _cnn_path else None
+CNN_MODEL_PATH = (
+    (Path(_cnn_path) if Path(_cnn_path).is_absolute() else _PROJECT_ROOT / _cnn_path) if _cnn_path else None
+)
 
 _siglip2_path = os.environ.get("SIGLIP2_MODEL_PATH", "")
-SIGLIP2_MODEL_PATH = (Path(_siglip2_path) if Path(_siglip2_path).is_absolute() else _PROJECT_ROOT / _siglip2_path) if _siglip2_path else None
+SIGLIP2_MODEL_PATH = (
+    (Path(_siglip2_path) if Path(_siglip2_path).is_absolute() else _PROJECT_ROOT / _siglip2_path)
+    if _siglip2_path
+    else None
+)
 
-VIDEO_EXTS = {'.mp4', '.webm', '.avi', '.mov', '.mkv'}
-SKIP_EXTS = {'.zip', '.rar', '.7z', '.gz'}
+VIDEO_EXTS = {".mp4", ".webm", ".avi", ".mov", ".mkv"}
+SKIP_EXTS = {".zip", ".rar", ".7z", ".gz"}
 BATCH_SIZE = int(os.environ.get("SCORE_BATCH_SIZE", "48"))
 PREPROCESS_WORKERS = int(os.environ.get("SCORE_WORKERS", "4"))
 
@@ -105,6 +115,7 @@ def init_vision_scores_table(conn: sqlite3.Connection):
 def _discover_model_paths() -> dict:
     """Scan classifier/ for .pt files and classify by model_class in checkpoint metadata."""
     import torch
+
     result = {"eva02": [], "siglip2": []}
     if not CLASSIFIER_DIR.exists():
         return result
@@ -136,33 +147,35 @@ def load_eva02_model(path: Path | None = None):
     import timm
     import torch
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     checkpoint = torch.load(str(model_path), map_location=device, weights_only=False)
 
-    model_name = checkpoint['model_name']
-    model_class = checkpoint.get('model_class', 'timm')
-    input_size = checkpoint.get('input_size', 224)
-    dropout = checkpoint.get('dropout', 0.3)
+    model_name = checkpoint["model_name"]
+    model_class = checkpoint.get("model_class", "timm")
+    input_size = checkpoint.get("input_size", 224)
+    dropout = checkpoint.get("dropout", 0.3)
 
-    if model_class == 'PreferenceModel':
+    if model_class == "PreferenceModel":
         import sys
+
         sys.path.insert(0, str(CLASSIFIER_DIR))
         from model_defs import PreferenceModel
 
         backbone = timm.create_model(model_name, pretrained=False, num_classes=0)
         num_features = backbone.num_features
         model = PreferenceModel(backbone, num_features, dropout)
-        model.load_state_dict(checkpoint['model_state_dict'])
+        model.load_state_dict(checkpoint["model_state_dict"])
     else:
-        model = timm.create_model(model_name, pretrained=False, num_classes=checkpoint.get('num_classes', 1))
-        model.load_state_dict(checkpoint['model_state_dict'])
+        model = timm.create_model(model_name, pretrained=False, num_classes=checkpoint.get("num_classes", 1))
+        model.load_state_dict(checkpoint["model_state_dict"])
 
     model.to(device)
     model.eval()
 
-    mean = checkpoint.get('normalize_mean', [0.485, 0.456, 0.406])
-    std = checkpoint.get('normalize_std', [0.229, 0.224, 0.225])
+    mean = checkpoint.get("normalize_mean", [0.485, 0.456, 0.406])
+    std = checkpoint.get("normalize_std", [0.229, 0.224, 0.225])
     from model_defs import build_timm_transform
+
     transform = build_timm_transform(input_size, mean, std)
 
     logger.info("Loaded EVA02: %s (%s), input=%d, device=%s", model_name, model_class, input_size, device)
@@ -188,25 +201,26 @@ def load_siglip2_model(path: Path | None = None):
         logger.warning("transformers not installed, skipping SigLIP2")
         return None
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     checkpoint = torch.load(str(model_path), map_location=device, weights_only=False)
 
-    model_name = checkpoint['model_name']
-    num_features = checkpoint.get('num_features', 1152)
-    dropout = checkpoint.get('dropout', 0.2)
+    model_name = checkpoint["model_name"]
+    num_features = checkpoint.get("num_features", 1152)
+    dropout = checkpoint.get("dropout", 0.2)
 
     import sys
+
     sys.path.insert(0, str(CLASSIFIER_DIR))
     from model_defs import NaFlexClassifier
 
     hf_model = AutoModel.from_pretrained(model_name, local_files_only=True)
     processor = AutoProcessor.from_pretrained(model_name, local_files_only=True)
     clf = NaFlexClassifier(hf_model, num_features, dropout)
-    clf.load_state_dict(checkpoint['model_state_dict'])
+    clf.load_state_dict(checkpoint["model_state_dict"])
     clf.to(device)
     clf.eval()
 
-    logger.info("Loaded SigLIP2: %s, AUC=%.4f, device=%s", model_name, checkpoint.get('cv_auc', 0), device)
+    logger.info("Loaded SigLIP2: %s, AUC=%.4f, device=%s", model_name, checkpoint.get("cv_auc", 0), device)
     return clf, processor, device, model_name
 
 
@@ -214,8 +228,9 @@ def preprocess_one_timm(args):
     """Preprocess a single image for timm model. Returns (image_id, tensor) or (image_id, None)."""
     image_id, path, transform = args
     from PIL import Image as PILImage
+
     try:
-        img = PILImage.open(path).convert('RGB')
+        img = PILImage.open(path).convert("RGB")
         tensor = transform(img)
         return (image_id, tensor)
     except Exception:
@@ -226,8 +241,9 @@ def preprocess_one_siglip(args):
     """Preprocess a single image for SigLIP2. Returns (image_id, pil_img) or (image_id, None)."""
     image_id, path = args
     from PIL import Image as PILImage
+
     try:
-        img = PILImage.open(path).convert('RGB')
+        img = PILImage.open(path).convert("RGB")
         return (image_id, img)
     except Exception:
         return (image_id, None)
@@ -236,6 +252,7 @@ def preprocess_one_siglip(args):
 def score_with_eva02(model, transform, device, to_score, labels_conn, model_name):
     """Score images with EVA02/timm model."""
     import torch
+
     scored = 0
     errors = 0
     start = time.time()
@@ -244,7 +261,7 @@ def score_with_eva02(model, transform, device, to_score, labels_conn, model_name
         if _shutdown:
             break
 
-        batch = to_score[batch_start:batch_start + BATCH_SIZE]
+        batch = to_score[batch_start : batch_start + BATCH_SIZE]
         prep_args = [(img_id, path, transform) for img_id, path in batch]
         with ThreadPoolExecutor(max_workers=PREPROCESS_WORKERS) as pool:
             prep_results = list(pool.map(preprocess_one_timm, prep_args))
@@ -267,8 +284,7 @@ def score_with_eva02(model, transform, device, to_score, labels_conn, model_name
 
         results = [(img_id, score, model_name) for img_id, score in zip(ids, scores)]
         labels_conn.executemany(
-            "INSERT OR REPLACE INTO vision_scores (image_id, score, model_name) VALUES (?, ?, ?)",
-            results
+            "INSERT OR REPLACE INTO vision_scores (image_id, score, model_name) VALUES (?, ?, ?)", results
         )
         labels_conn.commit()
         scored += len(results)
@@ -285,6 +301,7 @@ def score_with_eva02(model, transform, device, to_score, labels_conn, model_name
 def score_with_siglip2(model, processor, device, to_score, labels_conn, model_name):
     """Score images with SigLIP2 NaFlex model."""
     import torch
+
     scored = 0
     errors = 0
     start = time.time()
@@ -295,7 +312,7 @@ def score_with_siglip2(model, processor, device, to_score, labels_conn, model_na
         if _shutdown:
             break
 
-        batch = to_score[batch_start:batch_start + siglip_batch]
+        batch = to_score[batch_start : batch_start + siglip_batch]
         prep_args = [(img_id, path) for img_id, path in batch]
         with ThreadPoolExecutor(max_workers=PREPROCESS_WORKERS) as pool:
             prep_results = list(pool.map(preprocess_one_siglip, prep_args))
@@ -322,8 +339,7 @@ def score_with_siglip2(model, processor, device, to_score, labels_conn, model_na
 
             results = [(img_id, score, model_name) for img_id, score in zip(ids, scores)]
             labels_conn.executemany(
-                "INSERT OR REPLACE INTO vision_scores (image_id, score, model_name) VALUES (?, ?, ?)",
-                results
+                "INSERT OR REPLACE INTO vision_scores (image_id, score, model_name) VALUES (?, ?, ?)", results
             )
             labels_conn.commit()
             scored += len(results)
@@ -338,7 +354,7 @@ def score_with_siglip2(model, processor, device, to_score, labels_conn, model_na
                         prob = torch.sigmoid(logit).item()
                     labels_conn.execute(
                         "INSERT OR REPLACE INTO vision_scores (image_id, score, model_name) VALUES (?, ?, ?)",
-                        (img_id, prob, model_name)
+                        (img_id, prob, model_name),
                     )
                     scored += 1
                 except Exception:
@@ -356,10 +372,15 @@ def score_with_siglip2(model, processor, device, to_score, labels_conn, model_na
 
 def main():
     parser = argparse.ArgumentParser(description="Score crawler images with vision models")
-    parser.add_argument("--model", choices=["eva02", "siglip2", "all"], default="all",
-                        help="Which model type to use for scoring (default: all)")
-    parser.add_argument("--model-path", type=str, default=None,
-                        help="Explicit .pt file path to use (overrides --model auto-discovery)")
+    parser.add_argument(
+        "--model",
+        choices=["eva02", "siglip2", "all"],
+        default="all",
+        help="Which model type to use for scoring (default: all)",
+    )
+    parser.add_argument(
+        "--model-path", type=str, default=None, help="Explicit .pt file path to use (overrides --model auto-discovery)"
+    )
     args = parser.parse_args()
 
     if not DB_PATH.exists():
@@ -390,18 +411,16 @@ def main():
         sys.exit(1)
 
     # Get all images from crawler (skip videos/archives)
-    rows = crawler_conn.execute(
-        "SELECT id, file_path FROM images WHERE file_path IS NOT NULL"
-    ).fetchall()
+    rows = crawler_conn.execute("SELECT id, file_path FROM images WHERE file_path IS NOT NULL").fetchall()
 
     all_images = []
     for r in rows:
-        ext = Path(r['file_path']).suffix.lower()
+        ext = Path(r["file_path"]).suffix.lower()
         if ext in VIDEO_EXTS or ext in SKIP_EXTS:
             continue
-        full_path = CRAWLER_DIR / r['file_path']
+        full_path = CRAWLER_DIR / r["file_path"]
         if full_path.exists():
-            all_images.append((r['id'], full_path))
+            all_images.append((r["id"], full_path))
 
     logger.info("Total scorable images: %d", len(all_images))
 
@@ -409,7 +428,8 @@ def main():
     if eva02_result and not _shutdown:
         model, transform, device, model_name = eva02_result
         scored_ids = set(
-            r[0] for r in labels_conn.execute(
+            r[0]
+            for r in labels_conn.execute(
                 "SELECT image_id FROM vision_scores WHERE model_name = ?", (model_name,)
             ).fetchall()
         )
@@ -421,6 +441,7 @@ def main():
         del model, transform
         try:
             import torch
+
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
         except Exception:
@@ -429,7 +450,8 @@ def main():
     if siglip2_result and not _shutdown:
         model, processor, device, model_name = siglip2_result
         scored_ids = set(
-            r[0] for r in labels_conn.execute(
+            r[0]
+            for r in labels_conn.execute(
                 "SELECT image_id FROM vision_scores WHERE model_name = ?", (model_name,)
             ).fetchall()
         )
@@ -441,6 +463,7 @@ def main():
         del model, processor
         try:
             import torch
+
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
         except Exception:
@@ -449,6 +472,7 @@ def main():
     # Final GPU cleanup
     try:
         import torch
+
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             logger.info("[cleanup] GPU memory released")

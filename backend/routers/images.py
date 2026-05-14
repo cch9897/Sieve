@@ -50,7 +50,10 @@ async def list_images(
     count_sql = f"SELECT COUNT(*) FROM images WHERE {where}"
     list_sql = f"SELECT id, source, source_id, file_path, url, created_at FROM images WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?"
 
-    async with db.execute(count_sql, params) as count_cursor, db.execute(list_sql, params + [per_page, offset]) as list_cursor:
+    async with (
+        db.execute(count_sql, params) as count_cursor,
+        db.execute(list_sql, params + [per_page, offset]) as list_cursor,
+    ):
         total_row, rows = await count_cursor.fetchone(), await list_cursor.fetchall()
         total = total_row[0]
 
@@ -72,20 +75,22 @@ async def list_images(
         is_video = ext in VIDEO_EXTS
 
         scores = all_scores_map.get(r["id"], {})
-        images.append({
-            "id": r["id"],
-            "source": r["source"],
-            "source_id": r["source_id"],
-            "file_path": fp,
-            "url": r["url"],
-            "created_at": r["created_at"],
-            "date": img_date,
-            "subfolder": subfolder,
-            "is_video": is_video,
-            "thumb_url": f"/api/thumb/{fp}" if not is_video else f"/images/{fp}",
-            "vision_score": scores.get(active_db_name) if active_db_name else next(iter(scores.values()), None),
-            "vision_scores": scores,
-        })
+        images.append(
+            {
+                "id": r["id"],
+                "source": r["source"],
+                "source_id": r["source_id"],
+                "file_path": fp,
+                "url": r["url"],
+                "created_at": r["created_at"],
+                "date": img_date,
+                "subfolder": subfolder,
+                "is_video": is_video,
+                "thumb_url": f"/api/thumb/{fp}" if not is_video else f"/images/{fp}",
+                "vision_score": scores.get(active_db_name) if active_db_name else next(iter(scores.values()), None),
+                "vision_scores": scores,
+            }
+        )
 
     return {
         "images": images,
@@ -94,7 +99,6 @@ async def list_images(
         "per_page": per_page,
         "pages": (total + per_page - 1) // per_page if total > 0 else 0,
     }
-
 
 
 @router.get("/api/liked")
@@ -137,7 +141,10 @@ async def list_liked(
         f"WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?"
     )
 
-    async with ldb.execute(count_sql, params) as count_cursor, ldb.execute(list_sql, params + [per_page, offset]) as list_cursor:
+    async with (
+        ldb.execute(count_sql, params) as count_cursor,
+        ldb.execute(list_sql, params + [per_page, offset]) as list_cursor,
+    ):
         total_row, rows = await count_cursor.fetchone(), await list_cursor.fetchall()
         total = total_row[0]
 
@@ -156,20 +163,22 @@ async def list_liked(
         is_video = ext in VIDEO_EXTS
 
         scores = all_scores_map.get(r["id"], {})
-        images.append({
-            "id": r["id"],
-            "source": r["source"],
-            "source_id": r["source_id"],
-            "file_path": fp,
-            "url": r["url"],
-            "created_at": r["created_at"],
-            "date": img_date,
-            "subfolder": subfolder,
-            "is_video": is_video,
-            "thumb_url": f"/api/thumb/{fp}" if not is_video else f"/images/{fp}",
-            "vision_score": scores.get(active_db_name) if active_db_name else next(iter(scores.values()), None),
-            "vision_scores": scores,
-        })
+        images.append(
+            {
+                "id": r["id"],
+                "source": r["source"],
+                "source_id": r["source_id"],
+                "file_path": fp,
+                "url": r["url"],
+                "created_at": r["created_at"],
+                "date": img_date,
+                "subfolder": subfolder,
+                "is_video": is_video,
+                "thumb_url": f"/api/thumb/{fp}" if not is_video else f"/images/{fp}",
+                "vision_score": scores.get(active_db_name) if active_db_name else next(iter(scores.values()), None),
+                "vision_scores": scores,
+            }
+        )
 
     return {
         "images": images,
@@ -178,6 +187,7 @@ async def list_liked(
         "per_page": per_page,
         "pages": (total + per_page - 1) // per_page if total > 0 else 0,
     }
+
 
 @router.get("/api/liked/random")
 async def random_liked(
@@ -209,16 +219,20 @@ async def random_liked(
     where = " AND ".join(conditions)
 
     # Count total matching liked images
-    async with ldb.execute(f"SELECT COUNT(*) FROM main_db.images i INNER JOIN labels l ON i.id = l.image_id WHERE {where}", params) as c:
+    async with ldb.execute(
+        f"SELECT COUNT(*) FROM main_db.images i INNER JOIN labels l ON i.id = l.image_id WHERE {where}", params
+    ) as c:
         total = (await c.fetchone())[0]
 
     if total == 0:
         return {"images": [], "total": 0}
 
     # ID-based random sampling: pick a random offset in the ID range, scan forward
-    minmax_sql = f"SELECT MIN(i.id), MAX(i.id) FROM main_db.images i INNER JOIN labels l ON i.id = l.image_id WHERE {where}"
+    minmax_sql = (
+        f"SELECT MIN(i.id), MAX(i.id) FROM main_db.images i INNER JOIN labels l ON i.id = l.image_id WHERE {where}"
+    )
     async with ldb.execute(minmax_sql, params) as c:
-        min_id, max_id = (await c.fetchone())
+        min_id, max_id = await c.fetchone()
 
     fetch_limit = min(count * 3, 50)  # over-fetch to compensate for gaps
     random_id = random.randint(min_id, max_id)
@@ -262,22 +276,25 @@ async def random_liked(
         ext = Path(fp).suffix.lower()
         is_video = ext in VIDEO_EXTS
         scores = all_scores_map.get(r["id"], {})
-        images.append({
-            "id": r["id"],
-            "source": r["source"],
-            "source_id": r["source_id"],
-            "file_path": fp,
-            "url": r["url"],
-            "created_at": r["created_at"],
-            "date": img_date,
-            "subfolder": subfolder,
-            "is_video": is_video,
-            "thumb_url": f"/api/thumb/{fp}" if not is_video else f"/images/{fp}",
-            "vision_score": scores.get(active_db_name) if active_db_name else next(iter(scores.values()), None),
-            "vision_scores": scores,
-        })
+        images.append(
+            {
+                "id": r["id"],
+                "source": r["source"],
+                "source_id": r["source_id"],
+                "file_path": fp,
+                "url": r["url"],
+                "created_at": r["created_at"],
+                "date": img_date,
+                "subfolder": subfolder,
+                "is_video": is_video,
+                "thumb_url": f"/api/thumb/{fp}" if not is_video else f"/images/{fp}",
+                "vision_score": scores.get(active_db_name) if active_db_name else next(iter(scores.values()), None),
+                "vision_scores": scores,
+            }
+        )
 
     return {"images": images, "total": total}
+
 
 @router.get("/api/images/{image_id}")
 async def get_image(image_id: int):

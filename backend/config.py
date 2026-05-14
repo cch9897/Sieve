@@ -4,6 +4,7 @@ from pathlib import Path
 # Load .env file if python-dotenv is available
 try:
     from dotenv import load_dotenv
+
     load_dotenv(Path(__file__).parent.parent / ".env")
 except ImportError:
     pass

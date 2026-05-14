@@ -7,6 +7,7 @@ and the shared httpx client for DanbooruFinder API.
 import asyncio
 import logging
 import sqlite3
+import threading
 
 import aiosqlite
 import httpx
@@ -19,10 +20,12 @@ logger = logging.getLogger(__name__)
 _db_lock = asyncio.Lock()
 _labels_lock = asyncio.Lock()
 _danbooru_labels_lock = asyncio.Lock()
+_candidates_lock = asyncio.Lock()
 
 # ---------------------------------------------------------------------------
 # Main crawler DB pool (singleton, read-only)
 # ---------------------------------------------------------------------------
+
 
 async def get_db() -> aiosqlite.Connection:
     if state._db_pool is None:
@@ -50,6 +53,7 @@ def get_sync_db(readonly: bool = True):
 # ---------------------------------------------------------------------------
 # Labels DB
 # ---------------------------------------------------------------------------
+
 
 def _init_labels_db():
     """Initialize the labels database (separate from main dedup.db)."""
@@ -134,9 +138,11 @@ async def get_labels_db_async() -> aiosqlite.Connection:
                 await state._labels_pool.execute("PRAGMA busy_timeout = 30000")
                 await state._labels_pool.execute("PRAGMA cache_size = -20000")
                 await state._labels_pool.execute("PRAGMA mmap_size = 268435456")
+                # ATTACH DATABASE does not support parameterized ? placeholders.
+                # The path comes from a trusted env-var config, not user input.
+                db_uri = f"file:{config.DB_PATH}?mode=ro"
                 await state._labels_pool.execute(
-                    "ATTACH DATABASE ? AS main_db",
-                    [f"file:{config.DB_PATH}?mode=ro"],
+                    f"ATTACH DATABASE '{db_uri}' AS main_db",
                 )
     return state._labels_pool
 
@@ -144,6 +150,7 @@ async def get_labels_db_async() -> aiosqlite.Connection:
 # ---------------------------------------------------------------------------
 # Auto-tags table (in labels DB)
 # ---------------------------------------------------------------------------
+
 
 def _init_auto_tags_table():
     """Initialize auto_tags table in labels DB."""
@@ -168,6 +175,7 @@ def _init_auto_tags_table():
 # ---------------------------------------------------------------------------
 # Danbooru labels DB
 # ---------------------------------------------------------------------------
+
 
 def _init_danbooru_labels_db():
     """Initialize the danbooru labels database (separate from labels.db)."""
@@ -214,14 +222,49 @@ async def get_danbooru_labels_db() -> aiosqlite.Connection:
 
 
 # ---------------------------------------------------------------------------
+# Candidates DB (AI pre-screening queue, populated by prefetch_candidates.py)
+# ---------------------------------------------------------------------------
+
+
+async def get_candidates_db() -> aiosqlite.Connection:
+    """Lazy aiosqlite pool for candidates.db.
+
+    The candidates DB only exists after prefetch has run at least once. To
+    avoid silently masking data loss as an empty result set, this raises
+    ``FileNotFoundError`` when the file does not exist instead of letting
+    aiosqlite create an empty database on connect.
+    """
+    if state._candidates_pool is None:
+        async with _candidates_lock:
+            if state._candidates_pool is None:
+                if not config.CANDIDATES_DB_PATH.exists():
+                    raise FileNotFoundError(
+                        f"candidates.db not found at {config.CANDIDATES_DB_PATH} "
+                        "(run prefetch first)"
+                    )
+                state._candidates_pool = await aiosqlite.connect(str(config.CANDIDATES_DB_PATH))
+                state._candidates_pool.row_factory = aiosqlite.Row
+                await state._candidates_pool.execute("PRAGMA journal_mode=WAL")
+                await state._candidates_pool.execute("PRAGMA busy_timeout = 30000")
+                await state._candidates_pool.execute("PRAGMA cache_size = -20000")
+                await state._candidates_pool.execute("PRAGMA mmap_size = 268435456")
+    return state._candidates_pool
+
+
+# ---------------------------------------------------------------------------
 # Shared httpx client for DanbooruFinder proxy
 # ---------------------------------------------------------------------------
 
+_danbooru_client_lock = threading.Lock()
+
+
 def get_danbooru_client() -> httpx.AsyncClient:
     if state._danbooru_client is None:
-        state._danbooru_client = httpx.AsyncClient(
-            base_url=config.DANBOORU_API,
-            timeout=30.0,
-            limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
-        )
+        with _danbooru_client_lock:
+            if state._danbooru_client is None:
+                state._danbooru_client = httpx.AsyncClient(
+                    base_url=config.DANBOORU_API,
+                    timeout=30.0,
+                    limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+                )
     return state._danbooru_client

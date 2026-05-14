@@ -48,7 +48,10 @@ async def danbooru_candidates_next(
         where.append("image_id NOT IN (SELECT image_id FROM dldb.labels)")
 
         where_str = " AND ".join(where)
-        cur.execute(f"SELECT image_id, ext, score, rating, tags, preference_score, tag_score, cnn_score FROM candidates WHERE {where_str} ORDER BY preference_score DESC LIMIT 1", params_list)
+        cur.execute(
+            f"SELECT image_id, ext, score, rating, tags, preference_score, tag_score, cnn_score FROM candidates WHERE {where_str} ORDER BY preference_score DESC LIMIT 1",
+            params_list,
+        )
         row = cur.fetchone()
 
         cur.execute(f"SELECT COUNT(*) FROM candidates WHERE {where_str}", params_list)
@@ -66,7 +69,7 @@ async def danbooru_candidates_next(
         is_video = ext in ("mp4", "webm", "zip")
 
         # Parse tag_categories from DanbooruFinder if needed
-        tag_list = [t.strip().strip(',') for t in (tags_str or "").split() if t.strip()]
+        tag_list = [t.strip().strip(",") for t in (tags_str or "").split() if t.strip()]
         tag_categories = {"general": tag_list}
 
         return {
@@ -100,6 +103,7 @@ async def danbooru_candidates_mark(image_id: int):
     if not CANDIDATES_DB_PATH.exists():
         return {"ok": True}
     loop = asyncio.get_running_loop()
+
     def _mark():
         conn = sqlite3.connect(str(CANDIDATES_DB_PATH), timeout=30)
         conn.execute("PRAGMA journal_mode=WAL")
@@ -107,6 +111,7 @@ async def danbooru_candidates_mark(image_id: int):
         conn.execute("UPDATE candidates SET status='labeled' WHERE image_id=?", (image_id,))
         conn.commit()
         conn.close()
+
     await loop.run_in_executor(state._db_executor, _mark)
     return {"ok": True}
 
@@ -117,6 +122,7 @@ async def danbooru_candidates_clear():
     if not CANDIDATES_DB_PATH.exists():
         return {"ok": True, "deleted": 0}
     loop = asyncio.get_running_loop()
+
     def _clear():
         conn = sqlite3.connect(str(CANDIDATES_DB_PATH), timeout=30)
         conn.execute("PRAGMA journal_mode=WAL")
@@ -133,5 +139,6 @@ async def danbooru_candidates_clear():
         conn.commit()
         conn.close()
         return count
+
     deleted = await loop.run_in_executor(state._db_executor, _clear)
     return {"ok": True, "deleted": deleted}

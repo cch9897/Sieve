@@ -5,15 +5,13 @@ via attribute lookup (``state.xxx``).  Never bind these with
 ``from state import _active_model`` — that creates a snapshot.
 """
 
-import asyncio
 import concurrent.futures
-import subprocess
 import threading
 from collections import OrderedDict
 from pathlib import Path
-from typing import Optional
 
 from config import CRAWLER_DIR, PROJECT_ROOT
+from subprocess_manager import ManagedSubprocess
 
 # ---------------------------------------------------------------------------
 # ML model state (loaded in lifespan)
@@ -59,6 +57,7 @@ def video_include_sql(column: str = "file_path") -> tuple[str, list]:
         params.append(f"%{ext}")
     return " OR ".join(conditions), params
 
+
 # ---------------------------------------------------------------------------
 # Path constants
 # ---------------------------------------------------------------------------
@@ -81,46 +80,11 @@ _inference_device: str = "cpu"
 _cuda_available_cached: bool | None = None
 
 # ---------------------------------------------------------------------------
-# Subprocess handles & locks  (prefetch / rescore / retrain / pack / vscore / tag-train)
-# ---------------------------------------------------------------------------
-
-_prefetch_process: Optional[subprocess.Popen] = None
-_prefetch_log_fh = None
-_prefetch_lock = asyncio.Lock()
-
-_rescore_process: Optional[subprocess.Popen] = None
-_rescore_log_fh = None
-_rescore_lock = asyncio.Lock()
-
-_retrain_process: Optional[subprocess.Popen] = None
-_retrain_log_fh = None
-_retrain_lock = asyncio.Lock()
-
-_pack_process: Optional[subprocess.Popen] = None
-_pack_log_fh = None
-_pack_lock = asyncio.Lock()
-
-_vscore_process: Optional[subprocess.Popen] = None
-_vscore_log_fh = None
-_vscore_lock = asyncio.Lock()
-
-_tag_train_process: Optional[subprocess.Popen] = None
-_tag_train_log_fh = None
-_tag_train_lock = asyncio.Lock()
-
-# ---------------------------------------------------------------------------
-# Dedicated thread pool executors (isolate I/O, image, and DB work)
-# ---------------------------------------------------------------------------
-
-_image_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="img")
-_io_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="io")
-_db_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="db")
-
-# ---------------------------------------------------------------------------
 # Script & log path constants
 # ---------------------------------------------------------------------------
 
 PREFETCH_SCRIPT = PROJECT_ROOT / "classifier" / "prefetch_candidates.py"
+PREFETCH_LOG_PATH = Path(__file__).parent / "prefetch.log"
 GPU_CONFIG_PATH = Path(__file__).parent / "gpu_config.json"
 
 RETRAIN_SCRIPT = PROJECT_ROOT / "classifier" / "retrain.sh"
@@ -138,12 +102,61 @@ TAG_TRAIN_LOG_PATH = Path(__file__).parent / "tag_train.log"
 RESCORE_LOG_PATH = Path(__file__).parent / "rescore.log"
 
 # ---------------------------------------------------------------------------
+# Subprocess managers  (prefetch / rescore / retrain / pack / vscore / tag-train)
+# ---------------------------------------------------------------------------
+# All long-running ML subprocesses are tracked through ``ManagedSubprocess``
+# instances keyed by short name. ``routers/ml_ops.py`` looks them up here, and
+# ``main.py``'s lifespan walks this dict on shutdown.
+
+_subprocesses: dict[str, ManagedSubprocess] = {
+    "prefetch": ManagedSubprocess(
+        name="prefetch",
+        log_path=PREFETCH_LOG_PATH,
+        pgrep_pattern="prefetch_candidates.py",
+    ),
+    "rescore": ManagedSubprocess(
+        name="rescore",
+        log_path=RESCORE_LOG_PATH,
+        pgrep_pattern="prefetch_candidates.py.*--rescore",
+    ),
+    "retrain": ManagedSubprocess(
+        name="retrain",
+        log_path=RETRAIN_LOG_PATH,
+        pgrep_pattern="retrain.sh",
+    ),
+    "pack": ManagedSubprocess(
+        name="pack",
+        log_path=PACK_LOG_PATH,
+        pgrep_pattern="pack_pipeline.sh",
+    ),
+    "vscore": ManagedSubprocess(
+        name="vscore",
+        log_path=VSCORE_LOG_PATH,
+        pgrep_pattern="score_crawler.py",
+    ),
+    "tag_train": ManagedSubprocess(
+        name="tag_train",
+        log_path=TAG_TRAIN_LOG_PATH,
+        pgrep_pattern="tag_liked_t2i.py",
+    ),
+}
+
+# ---------------------------------------------------------------------------
+# Dedicated thread pool executors (isolate I/O, image, and DB work)
+# ---------------------------------------------------------------------------
+
+_image_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="img")
+_io_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="io")
+_db_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="db")
+
+# ---------------------------------------------------------------------------
 # DB connection pools (managed by database.py)
 # ---------------------------------------------------------------------------
 
-_db_pool = None       # aiosqlite.Connection for dedup.db (read-only)
-_labels_pool = None   # aiosqlite.Connection for labels.db
+_db_pool = None  # aiosqlite.Connection for dedup.db (read-only)
+_labels_pool = None  # aiosqlite.Connection for labels.db
 _danbooru_labels_pool = None  # aiosqlite.Connection for danbooru_labels.db
+_candidates_pool = None  # aiosqlite.Connection for candidates.db (lazy; raises if file missing)
 
 # ---------------------------------------------------------------------------
 # Danbooru HTTP client (managed by database.py)
@@ -156,14 +169,18 @@ _danbooru_client = None  # httpx.AsyncClient, set by database.get_danbooru_clien
 # ---------------------------------------------------------------------------
 
 _background_tasks: set = set()
+
+
 def _add_background_task(task):
     """Track a fire-and-forget asyncio task, auto-removing on completion."""
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
 
+
 def _remove_background_task(task):
     """Explicitly remove a tracked background task."""
     _background_tasks.discard(task)
+
 
 # ---------------------------------------------------------------------------
 # Novel meta cache
@@ -181,14 +198,14 @@ _NOVEL_CACHE_MAX = 2000
 def _active_model_db_name() -> str:
     """Get the model_name string stored in DB for the active model."""
     if _active_model and _active_model in _models:
-        return _models[_active_model]['model_name']
+        return _models[_active_model]["model_name"]
     return ""
 
 
 def _model_db_name(key: str) -> str:
     """Get the model_name string stored in DB for a given model key."""
     if key in _models:
-        return _models[key]['model_name']
+        return _models[key]["model_name"]
     return key
 
 

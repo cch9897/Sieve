@@ -48,7 +48,10 @@ async def _vision_scores_stats_cached(model: Optional[str] = None):
         async with ldb.execute(_BUCKET_SQL.format(where=where_clause), params) as c:
             for r in await c.fetchall():
                 raw_buckets[r[0]] = r[1]
-        buckets = {f"{lo/10:.1f}-{(lo+1)/10:.1f}": raw_buckets.get(f"{lo/10:.1f}-{(lo+1)/10:.1f}", 0) for lo in range(10)}
+        buckets = {
+            f"{lo / 10:.1f}-{(lo + 1) / 10:.1f}": raw_buckets.get(f"{lo / 10:.1f}-{(lo + 1) / 10:.1f}", 0)
+            for lo in range(10)
+        }
 
         return {
             "total_scored": total,
@@ -88,7 +91,10 @@ async def _vision_scores_stats_cached(model: Optional[str] = None):
         async with ldb.execute(_BUCKET_SQL.format(where="model_name = ?"), [mn]) as c:
             for r in await c.fetchall():
                 raw_buckets[r[0]] = r[1]
-        models_stats[mn]["distribution"] = {f"{lo/10:.1f}-{(lo+1)/10:.1f}": raw_buckets.get(f"{lo/10:.1f}-{(lo+1)/10:.1f}", 0) for lo in range(10)}
+        models_stats[mn]["distribution"] = {
+            f"{lo / 10:.1f}-{(lo + 1) / 10:.1f}": raw_buckets.get(f"{lo / 10:.1f}-{(lo + 1) / 10:.1f}", 0)
+            for lo in range(10)
+        }
 
     combined = await _stats_for("1=1", [])
     combined["model_name"] = model_names[0] if len(model_names) == 1 else None
@@ -101,8 +107,7 @@ async def vision_scores_compare(image_id: int = Query(...)):
     """Return all model scores for a specific image."""
     ldb = await get_labels_db_async()
     async with ldb.execute(
-        "SELECT model_name, score, scored_at FROM vision_scores WHERE image_id = ?",
-        [image_id]
+        "SELECT model_name, score, scored_at FROM vision_scores WHERE image_id = ?", [image_id]
     ) as c:
         rows = await c.fetchall()
     return {

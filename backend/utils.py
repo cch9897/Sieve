@@ -1,5 +1,6 @@
 """Pure utility functions for the Sieve backend."""
 
+import asyncio
 import json
 import logging
 import mimetypes
@@ -21,21 +22,22 @@ _novel_cache_lock = threading.Lock()
 
 def ttl_cache(seconds: int = 30, maxsize: int = 64):
     """Simple TTL cache for async functions. Supports one cache slot per unique args tuple."""
+
     def decorator(fn):
         _cache: dict[tuple, tuple[float, object]] = {}
-        _lock = threading.Lock()
+        _lock = asyncio.Lock()
 
         @wraps(fn)
         async def wrapper(*args, **kwargs):
             key = args + tuple(sorted(kwargs.items()))
             now = time.monotonic()
-            with _lock:
+            async with _lock:
                 if key in _cache:
                     ts, result = _cache[key]
                     if now - ts < seconds:
                         return result
             result = await fn(*args, **kwargs)
-            with _lock:
+            async with _lock:
                 _cache[key] = (now, result)
                 if len(_cache) > maxsize:
                     expired = [k for k, (ts, _) in _cache.items() if now - ts >= seconds]
@@ -43,12 +45,13 @@ def ttl_cache(seconds: int = 30, maxsize: int = 64):
                         del _cache[k]
             return result
 
-        def cache_clear():
-            with _lock:
+        async def cache_clear():
+            async with _lock:
                 _cache.clear()
 
         wrapper.cache_clear = cache_clear
         return wrapper
+
     return decorator
 
 
@@ -174,6 +177,6 @@ def extract_date_from_path(file_path: str | None) -> str | None:
         return None
     parts = file_path.split("/")
     for p in parts:
-        if len(p) == 10 and p[4] == '-' and p[7] == '-':
+        if len(p) == 10 and p[4] == "-" and p[7] == "-":
             return p
     return None

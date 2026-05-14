@@ -1,9 +1,6 @@
 import asyncio
-import io
-import json
 import logging
-import os
-import zipfile
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -14,11 +11,16 @@ from pydantic import BaseModel
 
 import state
 from config import CANDIDATES_DB_PATH, DANBOORU_LIKES_DIR
-from database import get_danbooru_client, get_danbooru_labels_db
+from database import get_candidates_db, get_danbooru_client, get_danbooru_labels_db
+from export_utils import build_zip_to_temp, stream_and_cleanup
+from services import labeler_service as svc
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# Danbooru's labels table carries the extra columns persisted on every upsert.
+LABELER_CFG = svc.DANBOORU_LABELER
 
 
 class DanbooruLabelRequest(BaseModel):
@@ -56,6 +58,10 @@ async def danbooru_labeler_next(
     results = data.get("results", [])
     pagination = data.get("pagination", {})
 
+    # Count ALL labeled images (not just the 20 candidates checked above)
+    async with dldb.execute("SELECT COUNT(*) FROM labels") as c:
+        total_labeled = (await c.fetchone())[0]
+
     # Check only the candidate IDs against labels (not ALL labeled IDs)
     candidate_ids = [item["id"] for item in results]
     if candidate_ids:
@@ -86,10 +92,12 @@ async def danbooru_labeler_next(
                     "is_video": is_video,
                     "thumb_url": f"/api/danbooru/thumbnail/{item['id']}.{item.get('ext', 'jpg')}",
                     "preview_url": f"/api/danbooru/preview/{item['id']}.{item.get('ext', 'jpg')}",
-                    "video_url": f"/api/danbooru/video_preview/{item['id']}.{item.get('ext', 'jpg')}" if is_video else None,
+                    "video_url": f"/api/danbooru/video_preview/{item['id']}.{item.get('ext', 'jpg')}"
+                    if is_video
+                    else None,
                 },
                 "remaining": pagination.get("total", 0),
-                "total_labeled": len(labeled_ids),
+                "total_labeled": total_labeled,
             }
 
     return {"image": None, "remaining": 0, "total_labeled": len(labeled_ids)}
@@ -102,23 +110,19 @@ async def danbooru_label_image(image_id: int, req: DanbooruLabelRequest):
         raise HTTPException(status_code=400, detail="verdict must be liked, disliked, or skipped")
 
     dldb = await get_danbooru_labels_db()
-    await dldb.execute(
-        """INSERT INTO labels (image_id, verdict, ext, score, rating, tags, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-           ON CONFLICT(image_id) DO UPDATE SET
-             verdict=excluded.verdict, ext=excluded.ext, score=excluded.score,
-             rating=excluded.rating, tags=excluded.tags, updated_at=CURRENT_TIMESTAMP""",
-        [image_id, req.verdict, req.ext, req.score, req.rating, req.danbooru_tags],
+    await svc.apply_label(
+        dldb,
+        LABELER_CFG,
+        image_id,
+        req.verdict,
+        req.tags,
+        extra_values={
+            "ext": req.ext,
+            "score": req.score,
+            "rating": req.rating,
+            "tags": req.danbooru_tags,
+        },
     )
-
-    if req.tags:
-        clean_tags = [(image_id, t.strip()) for t in req.tags if t.strip()]
-        if clean_tags:
-            await dldb.executemany(
-                "INSERT OR IGNORE INTO tags (image_id, tag) VALUES (?, ?)", clean_tags
-            )
-
-    await dldb.commit()
 
     # Auto-download liked images / remove if verdict changed away from liked
     if req.verdict == "liked" and req.ext:
@@ -134,6 +138,10 @@ async def danbooru_label_image(image_id: int, req: DanbooruLabelRequest):
 async def _download_danbooru_liked(image_id: int, ext: str):
     """Download original image from DanbooruFinder to local likes folder."""
     try:
+        # Validate ext to prevent path traversal (only alphanumeric, 2-5 chars)
+        if not re.fullmatch(r"^[a-z0-9]{2,5}$", ext):
+            logger.warning("[danbooru_likes] Rejected unsafe ext=%r for image %d", ext, image_id)
+            return
         DANBOORU_LIKES_DIR.mkdir(parents=True, exist_ok=True)
         dest = DANBOORU_LIKES_DIR / f"{image_id}.{ext}"
         if dest.exists():
@@ -168,9 +176,7 @@ async def danbooru_unlabel_image(image_id: int):
     # Remove local file if it was liked
     _task = asyncio.create_task(_remove_danbooru_liked(image_id))
     state._add_background_task(_task)
-    await dldb.execute("DELETE FROM labels WHERE image_id = ?", [image_id])
-    await dldb.execute("DELETE FROM tags WHERE image_id = ?", [image_id])
-    await dldb.commit()
+    await svc.remove_label(dldb, LABELER_CFG, image_id)
     return {"ok": True}
 
 
@@ -179,7 +185,14 @@ async def danbooru_labeler_stats():
     """Get danbooru labeling statistics."""
     dldb = await get_danbooru_labels_db()
 
-    stats = {"total_images": 0, "liked": 0, "disliked": 0, "skipped": 0}
+    counts = await svc.fetch_verdict_counts(dldb, LABELER_CFG)
+    stats: dict = {
+        "total_images": 0,
+        "liked": counts["liked"],
+        "disliked": counts["disliked"],
+        "skipped": counts["skipped"],
+        "total_labeled": counts["total_labeled"],
+    }
 
     # Get total from DanbooruFinder
     client = get_danbooru_client()
@@ -190,16 +203,8 @@ async def danbooru_labeler_stats():
     except httpx.HTTPError:
         pass
 
-    async with dldb.execute("SELECT verdict, COUNT(*) FROM labels GROUP BY verdict") as c:
-        for r in await c.fetchall():
-            stats[r[0]] = r[1]
-
-    stats["total_labeled"] = stats["liked"] + stats["disliked"] + stats["skipped"]
     stats["remaining"] = stats["total_images"] - stats["total_labeled"]
-
-    # Top user tags
-    async with dldb.execute("SELECT tag, COUNT(*) as cnt FROM tags GROUP BY tag ORDER BY cnt DESC LIMIT 50") as c:
-        stats["top_tags"] = [{"tag": r[0], "count": r[1]} for r in await c.fetchall()]
+    stats["top_tags"] = await svc.fetch_top_user_tags(dldb, LABELER_CFG, limit=50)
 
     # --- Rating distribution (all labeled) ---
     rating_dist: dict[str, dict[str, int]] = {}
@@ -233,9 +238,7 @@ async def danbooru_labeler_stats():
 
     # --- Top danbooru tags from liked images ---
     liked_tag_counts: dict[str, int] = {}
-    async with dldb.execute(
-        "SELECT tags FROM labels WHERE verdict = 'liked' AND tags IS NOT NULL AND tags != ''"
-    ) as c:
+    async with dldb.execute("SELECT tags FROM labels WHERE verdict = 'liked' AND tags IS NOT NULL AND tags != ''") as c:
         for r in await c.fetchall():
             # Tags may be space-separated or comma-separated
             raw = r[0].replace(",", " ")
@@ -259,61 +262,44 @@ async def danbooru_labeler_history(
     """Get danbooru labeled images history."""
     dldb = await get_danbooru_labels_db()
 
-    conditions = ["1=1"]
-    params: list = []
-
-    if verdict:
-        conditions.append("l.verdict = ?")
-        params.append(verdict)
-
-    if tag:
-        conditions.append("l.image_id IN (SELECT image_id FROM tags WHERE tag = ?)")
-        params.append(tag)
-
-    where = " AND ".join(conditions)
-    offset = (page - 1) * per_page
-
-    async with dldb.execute(f"SELECT COUNT(*) FROM labels l WHERE {where}", params) as c:
-        total = (await c.fetchone())[0]
-
-    async with dldb.execute(
-        f"""SELECT l.image_id, l.verdict, l.ext, l.score, l.rating, l.tags, l.updated_at
-            FROM labels l WHERE {where} ORDER BY l.updated_at DESC LIMIT ? OFFSET ?""",
-        params + [per_page, offset],
-    ) as c:
-        label_rows = await c.fetchall()
+    total, label_rows = await svc.fetch_history_page(
+        dldb,
+        LABELER_CFG,
+        select_columns="l.image_id, l.verdict, l.ext, l.score, l.rating, l.tags, l.updated_at",
+        verdict=verdict,
+        tag=tag,
+        page=page,
+        per_page=per_page,
+    )
 
     if not label_rows:
         return {"images": [], "total": total, "page": page, "per_page": per_page, "pages": 0}
 
     image_ids = [r[0] for r in label_rows]
 
-    # Fetch user tags
+    tags_map = await svc.fetch_user_tags_map(dldb, LABELER_CFG, image_ids)
+
+    # Fetch vision scores from candidates.db (pooled via database.get_candidates_db).
     placeholders = ",".join("?" * len(image_ids))
-    async with dldb.execute(
-        f"SELECT image_id, tag FROM tags WHERE image_id IN ({placeholders})",
-        image_ids,
-    ) as c:
-        tag_rows = await c.fetchall()
-
-    tags_map: dict[int, list[str]] = {}
-    for r in tag_rows:
-        tags_map.setdefault(r[0], []).append(r[1])
-
-    # Fetch vision scores from candidates.db
-    import aiosqlite as _aiosqlite
     vision_map: dict[int, float] = {}
     try:
-        async with _aiosqlite.connect(str(CANDIDATES_DB_PATH)) as cdb:
-            cdb.row_factory = _aiosqlite.Row
-            async with cdb.execute(
-                f"SELECT image_id, cnn_score FROM candidates WHERE image_id IN ({placeholders}) AND cnn_score IS NOT NULL",
-                image_ids,
-            ) as vc:
-                async for vrow in vc:
-                    vision_map[vrow[0]] = round(vrow[1], 4)
-    except Exception:
-        pass
+        cdb = await get_candidates_db()
+        async with cdb.execute(
+            f"SELECT image_id, cnn_score FROM candidates WHERE image_id IN ({placeholders}) AND cnn_score IS NOT NULL",
+            image_ids,
+        ) as vc:
+            async for vrow in vc:
+                vision_map[vrow[0]] = round(vrow[1], 4)
+    except FileNotFoundError:
+        # candidates.db not yet built (no prefetch run); not an error — just no scores.
+        logger.info("vision_score lookup skipped: candidates.db missing at %s", CANDIDATES_DB_PATH)
+    except Exception as e:
+        logger.warning(
+            "Failed to fetch vision_scores for %d image_ids (first=%s): %s",
+            len(image_ids),
+            image_ids[0] if image_ids else None,
+            e,
+        )
 
     images = []
     for r in label_rows:
@@ -326,21 +312,23 @@ async def danbooru_labeler_history(
         except Exception:
             danbooru_tags = ""
 
-        images.append({
-            "id": img_id,
-            "ext": ext,
-            "score": r[3] or 0,
-            "rating": r[4] or "",
-            "danbooru_tags": danbooru_tags,
-            "is_video": is_video,
-            "thumb_url": f"/api/danbooru/thumbnail/{img_id}.{ext}",
-            "preview_url": f"/api/danbooru/preview/{img_id}.{ext}",
-            "video_url": f"/api/danbooru/video_preview/{img_id}.{ext}" if is_video else None,
-            "verdict": r[1],
-            "updated_at": r[6],
-            "tags": tags_map.get(img_id, []),
-            "vision_score": vision_map.get(img_id),
-        })
+        images.append(
+            {
+                "id": img_id,
+                "ext": ext,
+                "score": r[3] or 0,
+                "rating": r[4] or "",
+                "danbooru_tags": danbooru_tags,
+                "is_video": is_video,
+                "thumb_url": f"/api/danbooru/thumbnail/{img_id}.{ext}",
+                "preview_url": f"/api/danbooru/preview/{img_id}.{ext}",
+                "video_url": f"/api/danbooru/video_preview/{img_id}.{ext}" if is_video else None,
+                "verdict": r[1],
+                "updated_at": r[6],
+                "tags": tags_map.get(img_id, []),
+                "vision_score": vision_map.get(img_id),
+            }
+        )
 
     return {
         "images": images,
@@ -363,42 +351,27 @@ async def danbooru_export_liked(
     Disliked/skipped: fetch from DanbooruFinder API then resize.
     All images resized to max_size. ZIP streamed via temp file.
     """
-    import tempfile
-
     dldb = await get_danbooru_labels_db()
 
-    conditions = ["l.verdict = ?"]
-    params: list = [verdict]
-    if tag:
-        conditions.append("l.image_id IN (SELECT image_id FROM tags WHERE tag = ?)")
-        params.append(tag)
-    where = " AND ".join(conditions)
-
-    async with dldb.execute(
-        f"SELECT image_id, ext, score, rating, tags FROM labels l WHERE {where}", params
-    ) as c:
-        rows = await c.fetchall()
+    rows = await svc.fetch_export_targets(
+        dldb,
+        LABELER_CFG,
+        select_columns="l.image_id, l.ext, l.score, l.rating, l.tags",
+        verdict=verdict,
+        tag=tag,
+    )
 
     if not rows:
         raise HTTPException(status_code=404, detail="No images found for export")
 
-    # Fetch user tags
     image_ids = [r[0] for r in rows]
-    placeholders = ",".join("?" * len(image_ids))
-    async with dldb.execute(
-        f"SELECT image_id, tag FROM tags WHERE image_id IN ({placeholders})", image_ids
-    ) as c:
-        tag_rows = await c.fetchall()
-
-    tags_map: dict[int, list[str]] = {}
-    for r in tag_rows:
-        tags_map.setdefault(r[0], []).append(r[1])
+    tags_map = await svc.fetch_user_tags_map(dldb, LABELER_CFG, image_ids)
 
     local_dir = DANBOORU_LIKES_DIR if verdict == "liked" else None
 
-    # Phase 1: resolve image sources -> list of (row_tuple, local_path_or_None)
-    # For items without local files, batch-download from API
-    items: list[tuple] = []  # (img_id, ext, score, rating, danbooru_tags, local_path_str|None)
+    # Phase 1: resolve image sources -> list of (img_id, ext, score, rating, danbooru_tags, local_path|None).
+    # For items without a local file, schedule an HTTP fetch.
+    items: list[tuple] = []
     need_download: list[tuple[int, int, str]] = []  # (index_in_items, img_id, ext)
 
     for r in rows:
@@ -423,89 +396,63 @@ async def danbooru_export_liked(
                 try:
                     resp = await client.get(f"/preview/{img_id}.{ext}", timeout=30.0)
                     if resp.status_code == 200:
-                        downloaded[idx] = resp.content  # noqa: F821
+                        downloaded[idx] = resp.content
                 except Exception:
                     pass
 
         await asyncio.gather(*[_fetch(i, iid, e) for i, iid, e in need_download])
 
-    # Phase 3: build ZIP in thread (CPU-bound resize)
+    # Phase 3: build ZIP via the shared helper (CPU-bound resize on the I/O executor).
     tags_snap = dict(tags_map)
-    items_snap = list(items)
     downloaded_snap = dict(downloaded)
-    del downloaded  # free refs
+    indexed_items = list(enumerate(items))
 
-    def _build_zip_sync() -> tuple[str, str, int, int]:
-        from PIL import Image as _PIL
-        _PIL.MAX_IMAGE_PIXELS = 100_000_000
+    def _fetch_bytes(entry: tuple) -> tuple[bytes | None, str]:
+        idx, (_img_id, ext, _score, _rating, _dtags, local_p) = entry
+        if local_p:
+            try:
+                return Path(local_p).read_bytes(), ext or "jpg"
+            except OSError:
+                pass
+        raw = downloaded_snap.get(idx)
+        return raw, ext or "jpg"
 
-        tmp_fd = tempfile.NamedTemporaryFile(delete=False, suffix=".zip", dir="/tmp")
-        tmp_path = tmp_fd.name
-        meta = []
-        packed = skipped = 0
+    def _arcname(entry: tuple, out_ext: str) -> str:
+        _idx, (img_id, _ext, _s, _r, _t, _lp) = entry
+        return f"images/{img_id}.{out_ext}"
 
-        with zipfile.ZipFile(tmp_fd, 'w', zipfile.ZIP_STORED) as zf:
-            for idx, (img_id, ext, score, rating, dtags, local_p) in enumerate(items_snap):
-                raw = None
-                if local_p:
-                    try:
-                        raw = Path(local_p).read_bytes()
-                    except OSError:
-                        pass
-                if raw is None:
-                    raw = downloaded_snap.get(idx)
-                if raw is None:
-                    skipped += 1
-                    continue
+    def _meta(entry: tuple, arcname: str, out_ext: str) -> dict:
+        _idx, (img_id, ext, score, rating, dtags, _lp) = entry
+        return {
+            "id": img_id,
+            "ext": out_ext,
+            "original_ext": ext,
+            "score": score,
+            "rating": rating,
+            "danbooru_tags": dtags,
+            "user_tags": tags_snap.get(img_id, []),
+            "filename": Path(arcname).name,
+        }
 
-                # Resize
-                if max_size == 0:
-                    data = raw
-                    out_ext = ext or "jpg"
-                    del raw
-                else:
-                    try:
-                        img = _PIL.open(io.BytesIO(raw))
-                        if img.mode in ("RGBA", "P", "LA"):
-                            out_fmt, out_ext = "PNG", "png"
-                        else:
-                            img = img.convert("RGB")
-                            out_fmt, out_ext = "JPEG", "jpg"
-                        w, h = img.size
-                        if max(w, h) > max_size:
-                            ratio = max_size / max(w, h)
-                            img = img.resize((int(w * ratio), int(h * ratio)), _PIL.LANCZOS)
-                        buf = io.BytesIO()
-                        img.save(buf, format=out_fmt, quality=92)
-                        data = buf.getvalue()
-                        del img, buf, raw
-                    except Exception:
-                        data = raw
-                        out_ext = ext
-                    del raw
+    tag_suffix = f"_{tag}" if tag else ""
+    # Final filename count is recomputed after build (skipped items reduce count),
+    # but the helper requires a name up front — patch it after build.
+    placeholder_name = f"danbooru_{verdict}{tag_suffix}_PLACEHOLDER.zip"
 
-                filename = f"{img_id}.{out_ext}"
-                zf.writestr(f"images/{filename}", data)
-                del data
-                meta.append({
-                    "id": img_id, "ext": out_ext, "original_ext": ext,
-                    "score": score, "rating": rating, "danbooru_tags": dtags,
-                    "user_tags": tags_snap.get(img_id, []), "filename": filename,
-                })
-                packed += 1
-
-            zf.writestr("metadata.json", json.dumps(meta, ensure_ascii=False, indent=2))
-
-        tag_suffix = f"_{tag}" if tag else ""
-        dl_name = f"danbooru_{verdict}{tag_suffix}_{packed}imgs.zip"
-        return tmp_path, dl_name, packed, skipped
-
-    loop = asyncio.get_running_loop()
-    tmp_path, dl_filename, packed, skipped = await loop.run_in_executor(state._io_executor, _build_zip_sync)
+    tmp_path, _placeholder, packed, skipped = await build_zip_to_temp(
+        indexed_items,
+        max_size=max_size,
+        fetch_bytes=_fetch_bytes,
+        arcname_fn=_arcname,
+        meta_fn=_meta,
+        download_filename=placeholder_name,
+    )
 
     if packed == 0:
         try:
-            os.unlink(tmp_path)
+            import os as _os
+
+            _os.unlink(tmp_path)
         except OSError:
             pass
         raise HTTPException(status_code=404, detail="No image files could be loaded")
@@ -513,19 +460,10 @@ async def danbooru_export_liked(
     if skipped > 0:
         logger.info("[danbooru_export] %s: packed %d, skipped %d", verdict, packed, skipped)
 
-    async def _stream_and_cleanup():
-        try:
-            with open(tmp_path, "rb") as f:
-                while chunk := f.read(1024 * 1024):
-                    yield chunk
-        finally:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
+    dl_filename = f"danbooru_{verdict}{tag_suffix}_{packed}imgs.zip"
 
     return StreamingResponse(
-        _stream_and_cleanup(),
+        stream_and_cleanup(tmp_path),
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{dl_filename}"'},
     )

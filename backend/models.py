@@ -22,18 +22,20 @@ _model_lock = threading.Lock()
 # Model loading / unloading
 # ---------------------------------------------------------------------------
 
+
 def _unload_model(key: str):
     """Unload model weights from memory."""
-    if key in state._models and state._models[key].get('model') is not None:
+    if key in state._models and state._models[key].get("model") is not None:
         logger.info("[models] Unloading %s", key)
-        state._models[key]['model'] = None
-        state._models[key]['transform'] = None
-        state._models[key]['processor'] = None
-        if state._cnn_model and state._cnn_model.get('source_file') == state._models[key].get('source_file'):
+        state._models[key]["model"] = None
+        state._models[key]["transform"] = None
+        state._models[key]["processor"] = None
+        if state._cnn_model and state._cnn_model.get("source_file") == state._models[key].get("source_file"):
             state._cnn_model = None
     if state._loaded_model_key == key:
         state._loaded_model_key = None
     import gc
+
     gc.collect()
 
 
@@ -47,7 +49,7 @@ def _load_model_weights_locked(key: str):
     if key not in state._models:
         raise ValueError(f"Unknown model key: {key}")
     info = state._models[key]
-    if info.get('model') is not None:
+    if info.get("model") is not None:
         state._loaded_model_key = key
         return
 
@@ -57,52 +59,53 @@ def _load_model_weights_locked(key: str):
 
     import torch
 
-    pt_path = info['_pt_path']
+    pt_path = info["_pt_path"]
     _init_device = "cpu"
     checkpoint = torch.load(pt_path, map_location=_init_device, weights_only=False)
-    model_class = info['model_class']
-    model_name = info['model_name']
+    model_class = info["model_class"]
+    model_name = info["model_name"]
 
-    if model_class == 'NaFlexClassifier':
+    if model_class == "NaFlexClassifier":
         from model_defs import NaFlexClassifier
         from transformers import AutoModel, AutoProcessor
 
-        num_features = info.get('num_features', 1152)
-        dropout = checkpoint.get('dropout', 0.2)
+        num_features = info.get("num_features", 1152)
+        dropout = checkpoint.get("dropout", 0.2)
         hf_model = AutoModel.from_pretrained(model_name, dtype=torch.float32, local_files_only=True)
         processor = AutoProcessor.from_pretrained(model_name, local_files_only=True)
         siglip_clf = NaFlexClassifier(hf_model, num_features, dropout)
-        siglip_clf.load_state_dict(checkpoint['model_state_dict'])
+        siglip_clf.load_state_dict(checkpoint["model_state_dict"])
         siglip_clf.to(_init_device)
         siglip_clf.eval()
-        info['model'] = siglip_clf
-        info['processor'] = processor
+        info["model"] = siglip_clf
+        info["processor"] = processor
 
-    elif model_class in ('PreferenceModel', 'timm'):
+    elif model_class in ("PreferenceModel", "timm"):
         import timm
 
-        input_size = info.get('input_size', 224)
-        mean = checkpoint.get('normalize_mean', [0.485, 0.456, 0.406])
-        std = checkpoint.get('normalize_std', [0.229, 0.224, 0.225])
+        input_size = info.get("input_size", 224)
+        mean = checkpoint.get("normalize_mean", [0.485, 0.456, 0.406])
+        std = checkpoint.get("normalize_std", [0.229, 0.224, 0.225])
 
-        if model_class == 'PreferenceModel':
+        if model_class == "PreferenceModel":
             from model_defs import PreferenceModel
 
-            num_features = checkpoint.get('num_features', 1024)
-            dropout = checkpoint.get('dropout', 0.2)
+            num_features = checkpoint.get("num_features", 1024)
+            dropout = checkpoint.get("dropout", 0.2)
             backbone = timm.create_model(model_name, pretrained=False, num_classes=0)
             cnn = PreferenceModel(backbone, num_features, dropout)
-            cnn.load_state_dict(checkpoint['model_state_dict'])
+            cnn.load_state_dict(checkpoint["model_state_dict"])
         else:
-            cnn = timm.create_model(model_name, pretrained=False, num_classes=checkpoint.get('num_classes', 1))
-            cnn.load_state_dict(checkpoint['model_state_dict'])
+            cnn = timm.create_model(model_name, pretrained=False, num_classes=checkpoint.get("num_classes", 1))
+            cnn.load_state_dict(checkpoint["model_state_dict"])
 
         cnn.to(_init_device)
         cnn.eval()
         from model_defs import build_timm_transform
+
         transform = build_timm_transform(input_size, mean, std)
-        info['model'] = cnn
-        info['transform'] = transform
+        info["model"] = cnn
+        info["transform"] = transform
         state._cnn_model = info
     else:
         raise ValueError(f"Unknown model_class: {model_class}")
@@ -116,7 +119,7 @@ def _ensure_model_loaded(key: str | None = None):
     key = key or state._active_model
     if not key or key not in state._models:
         return False
-    if state._models[key].get('model') is None:
+    if state._models[key].get("model") is None:
         with _model_lock:
             _load_model_weights_locked(key)
     return True
@@ -125,6 +128,7 @@ def _ensure_model_loaded(key: str | None = None):
 # ---------------------------------------------------------------------------
 # Inference device management
 # ---------------------------------------------------------------------------
+
 
 def _get_torch_device() -> str:
     """Return the current torch device string."""
@@ -139,12 +143,13 @@ def _migrate_cnn_to_device(device: str):
             return
         try:
             import torch
+
             target = torch.device(device)
             for key, info in state._models.items():
-                if info.get('model') is None:
+                if info.get("model") is None:
                     continue
-                info['model'] = info['model'].to(target)
-                info['model'].eval()
+                info["model"] = info["model"].to(target)
+                info["model"].eval()
             logger.info("[inference] All models (%s) migrated to %s", list(state._models.keys()), device)
         except Exception as e:
             logger.error("[inference] Failed to migrate models to %s: %s", device, e)
@@ -155,6 +160,7 @@ def _check_cuda_available() -> bool:
     if state._cuda_available_cached is None:
         try:
             import torch
+
             state._cuda_available_cached = torch.cuda.is_available()
         except Exception:
             state._cuda_available_cached = False
@@ -167,12 +173,13 @@ def _cuda_info() -> dict | None:
         return None
     try:
         import torch
+
         idx = 0
         if not torch.cuda.is_initialized():
             torch.cuda.init()
         props = torch.cuda.get_device_properties(idx)
         mem_alloc = torch.cuda.memory_allocated(idx) / 1024 / 1024
-        mem_total = getattr(props, 'total_memory', getattr(props, 'total_mem', 0)) / 1024 / 1024
+        mem_total = getattr(props, "total_memory", getattr(props, "total_mem", 0)) / 1024 / 1024
         return {
             "device_name": props.name,
             "total_memory_mb": round(mem_total),
@@ -187,6 +194,7 @@ def _cuda_info() -> dict | None:
 # ---------------------------------------------------------------------------
 # GPU config (persisted to disk)
 # ---------------------------------------------------------------------------
+
 
 def _load_gpu_config() -> dict:
     """Load GPU inference config from disk."""
@@ -214,6 +222,7 @@ def _save_gpu_config(cfg: dict):
 # Image scoring functions
 # ---------------------------------------------------------------------------
 
+
 def _score_image_with_model(image_path: str | Path, model_key: str | None = None) -> float | None:
     """Score a single image using the specified model (or active model). Returns probability."""
     key = model_key or state._active_model
@@ -221,24 +230,25 @@ def _score_image_with_model(image_path: str | Path, model_key: str | None = None
         return None
     _ensure_model_loaded(key)
     info = state._models[key]
-    if info.get('model') is None:
+    if info.get("model") is None:
         return None
     try:
         import torch
         from PIL import Image as PILImage
-        device = torch.device(_get_torch_device())
-        img = PILImage.open(image_path).convert('RGB')
 
-        if info['type'] == 'siglip2' and info.get('processor'):
-            inputs = info['processor'](images=img, return_tensors="pt")
+        device = torch.device(_get_torch_device())
+        img = PILImage.open(image_path).convert("RGB")
+
+        if info["type"] == "siglip2" and info.get("processor"):
+            inputs = info["processor"](images=img, return_tensors="pt")
             inputs = {k: v.to(device) for k, v in inputs.items()}
             with torch.no_grad():
-                logit = info['model'](**inputs).squeeze()
+                logit = info["model"](**inputs).squeeze()
                 prob = torch.sigmoid(logit).item()
         else:
-            tensor = info['transform'](img).unsqueeze(0).to(device)
+            tensor = info["transform"](img).unsqueeze(0).to(device)
             with torch.no_grad():
-                logit = info['model'](tensor).squeeze()
+                logit = info["model"](tensor).squeeze()
                 prob = torch.sigmoid(logit).item()
         return prob
     except Exception as e:
@@ -261,6 +271,7 @@ def _fused_score(tag_score: float, cnn_score: float | None, tag_weight: float = 
 def _build_preference_features(tags_str: str, rating: str, model_data: dict) -> np.ndarray:
     """Build feature vector for a Danbooru image (matches train_classifier.py logic)."""
     from feature_utils import build_tag_features
+
     return build_tag_features(tags_str, rating, model_data)
 
 
@@ -269,11 +280,13 @@ async def _reload_preference_model():
     import asyncio
 
     from config import PREFERENCE_MODEL_PATH
+
     if PREFERENCE_MODEL_PATH.exists():
         try:
             import joblib
+
             new_model = await asyncio.to_thread(joblib.load, PREFERENCE_MODEL_PATH)
             state._preference_model = new_model
-            logger.info("[ml] XGBoost hot-reloaded: AUC=%.4f", new_model.get('auc', 0))
+            logger.info("[ml] XGBoost hot-reloaded: AUC=%.4f", new_model.get("auc", 0))
         except Exception as e:
             logger.error("[ml] Failed to hot-reload XGBoost: %s", e)
