@@ -40,3 +40,8 @@ Thumbs.db
 
 # Temp
 _tmp_pack/
+current-ui.png
+local:/
+
+# Generated caches
+classifier/_resize_cache/

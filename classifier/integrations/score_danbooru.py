@@ -14,7 +14,9 @@ import requests
 
 import os as _os
 from pathlib import Path as _Path
-_PROJECT_ROOT = _Path(__file__).parent.parent
+_PROJECT_ROOT = _Path(__file__).parent.parent.parent
+sys.path.insert(0, str(_PROJECT_ROOT / "classifier"))
+from feature_utils import build_tag_features
 try:
     from dotenv import load_dotenv
     load_dotenv(_PROJECT_ROOT / ".env")
@@ -33,46 +35,8 @@ def load_model(path=MODEL_PATH):
 
 
 def build_features_for_image(tags_str: str, rating: str, model_data: dict) -> np.ndarray:
-    """Build feature vector for a single Danbooru image.
-    
-    Args:
-        tags_str: space-separated tag string from Danbooru
-        rating: single-char rating (g/s/q/e)
-        model_data: loaded model dict with tag_vocab, feature_names
-    """
-    tag_vocab = model_data['tag_vocab']
-    feature_names = model_data['feature_names']
-    n_features = len(feature_names)
-    
-    x = np.zeros(n_features, dtype=np.float32)
-    
-    # Parse tags: Danbooru tags may be comma-separated with underscores
-    raw_tags = [t.strip().strip(',') for t in tags_str.split()] if tags_str else []
-    # WD14 vocab uses spaces for multi-word tags; Danbooru uses underscores
-    image_tags = set()
-    for t in raw_tags:
-        image_tags.add(t)
-        image_tags.add(t.replace('_', ' '))
-    
-    # Tag features (binary: present=1.0, absent=0.0)
-    tag_to_idx = {t: i for i, t in enumerate(tag_vocab)}
-    for tag in image_tags:
-        if tag in tag_to_idx:
-            x[tag_to_idx[tag]] = 1.0
-    
-    # Rating features (4 dims after tag_vocab)
-    n_tags = len(tag_vocab)
-    rating_map = {'general': 0, 'sensitive': 1, 'questionable': 2, 'explicit': 3}
-    rating_full = {'g': 'general', 's': 'sensitive', 'q': 'questionable', 'e': 'explicit'}
-    rating_name = rating_full.get(rating, '')
-    if rating_name in rating_map:
-        x[n_tags + rating_map[rating_name]] = 1.0
-    
-    # Meta features
-    x[n_tags + 4] = len(raw_tags)  # tag_count (original, not doubled)
-    x[n_tags + 5] = 1.0  # max_confidence (binary tags → 1.0)
-    
-    return x
+    """Build feature vector for a single Danbooru image."""
+    return build_tag_features(tags_str, rating, model_data)
 
 
 def score_images(images: list, model_data: dict) -> list:

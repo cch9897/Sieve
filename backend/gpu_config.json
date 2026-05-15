@@ -1,0 +1,6 @@
+{
+  "url": "http://gpu-server:5099",
+  "batch_size": 64,
+  "enabled": false,
+  "inference_mode": "local_gpu"
+}

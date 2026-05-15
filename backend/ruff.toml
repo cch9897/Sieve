@@ -1,0 +1,9 @@
+line-length = 120
+target-version = "py313"
+
+[lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]  # many existing long lines
+
+[lint.per-file-ignores]
+"tests/*" = ["E402"]  # allow late imports in tests

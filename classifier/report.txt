@@ -1,0 +1,45 @@
+Model: XGBoost
+Dataset: 12519 samples (4834 liked, 7685 disliked)
+Features: 5924
+ROC AUC: 0.8373
+
+              precision    recall  f1-score   support
+
+    disliked       0.79      0.86      0.83      7685
+       liked       0.75      0.64      0.69      4834
+
+    accuracy                           0.78     12519
+   macro avg       0.77      0.75      0.76     12519
+weighted avg       0.78      0.78      0.77     12519
+
+Top 30 Features:
+   1. long_hair                      0.0165
+   2. general                        0.0099
+   3. max_confidence                 0.0065
+   4. sensitive                      0.0056
+   5. playboy_bunny                  0.0056
+   6. looking_at_viewer              0.0052
+   7. solo                           0.0041
+   8. kaede_(sayappa)                0.0035
+   9. mignon                         0.0035
+  10. monochrome                     0.0035
+  11. rabbit ears                    0.0034
+  12. 1boy                           0.0032
+  13. short hair                     0.0032
+  14. greyscale                      0.0031
+  15. white_pantyhose                0.0031
+  16. breasts                        0.0030
+  17. short_hair                     0.0029
+  18. one-piece_swimsuit             0.0028
+  19. long_sleeves                   0.0028
+  20. bow                            0.0028
+  21. toki_(blue_archive)            0.0028
+  22. highleg_leotard                0.0028
+  23. comic                          0.0027
+  24. leotard                        0.0027
+  25. manjuu_(azur_lane)             0.0027
+  26. halo                           0.0026
+  27. maid_headdress                 0.0026
+  28. speech bubble                  0.0025
+  29. white_hair                     0.0025
+  30. ring                           0.0025

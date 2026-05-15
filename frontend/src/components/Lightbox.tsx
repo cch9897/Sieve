@@ -1,14 +1,15 @@
-import { useEffect, useCallback, useRef, useState } from 'react'
+import { useEffect, useCallback, useRef, useState, useMemo, type ReactNode } from 'react'
 import type { ImageItem } from '../types'
 import { getSourceMeta } from '../sourceMeta'
-import { fetchAutoTags } from '../api'
-import type { AutoTagsDetail } from '../api'
+import { fetchAutoTags, fetchVisionScoreCompare } from '../api'
+import type { AutoTagsDetail, VisionScoreCompare } from '../api'
+import { useFocusTrap } from '../hooks/useFocusTrap'
 
 const RATING_COLORS: Record<string, string> = {
-  general: 'border-green-500/40 bg-green-500/15 text-green-400',
-  sensitive: 'border-yellow-500/40 bg-yellow-500/15 text-yellow-400',
-  questionable: 'border-orange-500/40 bg-orange-500/15 text-orange-400',
-  explicit: 'border-red-500/40 bg-red-500/15 text-red-400',
+  general: 'border-emerald-500/30 bg-emerald-500/12 text-emerald-200',
+  sensitive: 'border-amber-500/30 bg-amber-500/12 text-amber-200',
+  questionable: 'border-orange-500/30 bg-orange-500/12 text-orange-200',
+  explicit: 'border-rose-500/30 bg-rose-500/12 text-rose-200',
 }
 
 interface LightboxProps {
@@ -26,26 +27,50 @@ const SOURCE_LINKS: Record<string, (id: string) => string> = {
   konachan: (id) => `https://konachan.com/post/show/${id}`,
 }
 
+function renderScoreBar(score: number): ReactNode {
+  return (
+    <div className="mt-2 flex items-center gap-2">
+      <div className="h-2 flex-1 overflow-hidden rounded-full bg-white/10">
+        <div
+          className={[
+            'h-full rounded-full transition-all',
+            score >= 0.7 ? 'bg-emerald-500' : score >= 0.4 ? 'bg-amber-500' : 'bg-rose-500',
+          ].join(' ')}
+          style={{ width: `${(score * 100).toFixed(1)}%` }}
+        />
+      </div>
+      <span className="w-12 text-right font-mono text-[11px] text-white/78">{(score * 100).toFixed(1)}%</span>
+    </div>
+  )
+}
+
+const MAX_CACHE = 50
+
 export default function Lightbox({ image, images, onClose, onNavigate }: LightboxProps) {
-  const currentIndex = image ? images.findIndex(i => i.id === image.id) : -1
+  const focusTrapRef = useFocusTrap(!!image)
+  const currentIndex = useMemo(
+    () => image ? images.findIndex(i => i.id === image.id) : -1,
+    [images, image?.id]
+  )
 
   const goNext = useCallback(() => {
-    if (currentIndex >= 0 && currentIndex < images.length - 1) {
-      onNavigate(images[currentIndex + 1])
-    }
+    if (currentIndex >= 0 && currentIndex < images.length - 1) onNavigate(images[currentIndex + 1])
   }, [currentIndex, images, onNavigate])
 
   const goPrev = useCallback(() => {
-    if (currentIndex > 0) {
-      onNavigate(images[currentIndex - 1])
-    }
+    if (currentIndex > 0) onNavigate(images[currentIndex - 1])
   }, [currentIndex, images, onNavigate])
 
+  const [zoomed, setZoomed] = useState(false)
+  const zoomedRef = useRef(zoomed)
+  zoomedRef.current = zoomed
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
-    if (e.key === 'Escape') onClose()
-    else if (e.key === 'ArrowRight') goNext()
-    else if (e.key === 'ArrowLeft') goPrev()
-  }, [onClose, goNext, goPrev])
+    const isZoomed = zoomedRef.current
+    if (e.key === 'Escape') { if (isZoomed) { setZoomed(false); return } onClose() }
+    else if (e.key === 'ArrowRight' && !isZoomed) goNext()
+    else if (e.key === 'ArrowLeft' && !isZoomed) goPrev()
+    else if ((e.key === 'z' || e.key === 'Z') && !image?.is_video) { e.preventDefault(); setZoomed(z => !z) }
+  }, [onClose, goNext, goPrev, image?.is_video])
 
   useEffect(() => {
     if (image) {
@@ -71,15 +96,64 @@ export default function Lightbox({ image, images, onClose, onNavigate }: Lightbo
 
   const [autoTags, setAutoTags] = useState<AutoTagsDetail | null>(null)
   const [tagsLoading, setTagsLoading] = useState(false)
+  const [multiScores, setMultiScores] = useState<VisionScoreCompare | null>(null)
+  const autoTagsCache = useRef<Map<number, AutoTagsDetail>>(new Map())
+  const visionScoreCache = useRef<Map<number, VisionScoreCompare>>(new Map())
+  const abortRef = useRef<AbortController | null>(null)
 
   useEffect(() => {
-    if (!image) { setAutoTags(null); return }
+    if (!image) { setAutoTags(null); setMultiScores(null); return }
+
+    abortRef.current?.abort()
+    const controller = new AbortController()
+    abortRef.current = controller
+
+    const cachedTags = autoTagsCache.current.get(image.id)
+    const cachedScores = visionScoreCache.current.get(image.id)
+
+    if (cachedTags && cachedScores) {
+      setAutoTags(cachedTags)
+      setMultiScores(cachedScores)
+      setTagsLoading(false)
+      return
+    }
+
     setTagsLoading(true)
-    setAutoTags(null)
-    fetchAutoTags(image.id)
-      .then(t => setAutoTags(t))
-      .catch(() => setAutoTags(null))
-      .finally(() => setTagsLoading(false))
+    if (!cachedTags) setAutoTags(null)
+    else setAutoTags(cachedTags)
+    if (!cachedScores) setMultiScores(null)
+    else setMultiScores(cachedScores)
+
+    if (!cachedTags) {
+      fetchAutoTags(image.id, controller.signal)
+        .then(t => {
+          if (autoTagsCache.current.size > MAX_CACHE) {
+            const firstKey = autoTagsCache.current.keys().next().value
+            if (firstKey !== undefined) autoTagsCache.current.delete(firstKey)
+          }
+          autoTagsCache.current.set(image.id, t)
+          setAutoTags(t)
+        })
+        .catch(e => { if (e.name !== 'AbortError') setAutoTags(null) })
+        .finally(() => setTagsLoading(false))
+    } else {
+      setTagsLoading(false)
+    }
+
+    if (!cachedScores) {
+      fetchVisionScoreCompare(image.id, controller.signal)
+        .then(s => {
+          if (visionScoreCache.current.size > MAX_CACHE) {
+            const firstKey = visionScoreCache.current.keys().next().value
+            if (firstKey !== undefined) visionScoreCache.current.delete(firstKey)
+          }
+          visionScoreCache.current.set(image.id, s)
+          setMultiScores(s)
+        })
+        .catch(e => { if (e.name !== 'AbortError') setMultiScores(null) })
+    }
+
+    return () => { controller.abort() }
   }, [image?.id])
 
   const touchStart = useRef<{ x: number; y: number } | null>(null)
@@ -103,176 +177,114 @@ export default function Lightbox({ image, images, onClose, onNavigate }: Lightbo
   const sourceLink = SOURCE_LINKS[image.source]?.(image.source_id) || image.url
   const hasPrev = currentIndex > 0
   const hasNext = currentIndex >= 0 && currentIndex < images.length - 1
+  const scoreEntries = multiScores?.scores
+    ? Object.entries(multiScores.scores).map(([model, data]) => ({ model, ...data }))
+    : []
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/95 p-3 md:p-6"
+      ref={focusTrapRef}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(4,3,2,0.94)] p-3 md:p-6"
+      role="dialog"
+      aria-modal="true"
+      aria-label="图片预览"
       onClick={onClose}
       onTouchStart={handleTouchStart}
       onTouchEnd={handleTouchEnd}
     >
-      <button
-        onClick={onClose}
-        className="absolute right-4 top-4 z-10 flex h-11 w-11 items-center justify-center rounded-full border border-white/10 bg-black/40 text-2xl text-white/70 transition-colors hover:bg-black/60 hover:text-white"
-      >
-        &times;
-      </button>
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(159,91,82,0.18),transparent_24%),radial-gradient(circle_at_80%_14%,rgba(214,165,93,0.14),transparent_20%)]" />
 
-      {hasPrev && (
-        <button
-          onClick={e => { e.stopPropagation(); goPrev() }}
-          className="absolute left-3 top-1/2 z-10 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full border border-white/10 bg-black/40 text-white/70 transition-colors hover:bg-black/60 hover:text-white"
-        >
-          <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M12 4l-6 6 6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-        </button>
-      )}
+      <button onClick={onClose} aria-label="关闭预览" className="absolute right-4 top-4 z-10 flex h-11 w-11 items-center justify-center rounded-full border border-[var(--line)] bg-[rgba(19,15,12,0.78)] text-2xl text-[var(--text)] transition-colors hover:bg-[rgba(40,32,24,0.92)]">&times;</button>
 
-      {hasNext && (
-        <button
-          onClick={e => { e.stopPropagation(); goNext() }}
-          className="absolute right-3 top-1/2 z-10 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full border border-white/10 bg-black/40 text-white/70 transition-colors hover:bg-black/60 hover:text-white"
-        >
-          <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M8 4l6 6-6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-        </button>
-      )}
+      {hasPrev && <button onClick={e => { e.stopPropagation(); goPrev() }} aria-label="上一张" className="absolute left-3 top-1/2 z-10 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full border border-[var(--line)] bg-[rgba(19,15,12,0.78)] text-[var(--text)] transition-colors hover:bg-[rgba(40,32,24,0.92)]"><svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M12 4l-6 6 6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg></button>}
+      {hasNext && <button onClick={e => { e.stopPropagation(); goNext() }} aria-label="下一张" className="absolute right-3 top-1/2 z-10 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full border border-[var(--line)] bg-[rgba(19,15,12,0.78)] text-[var(--text)] transition-colors hover:bg-[rgba(40,32,24,0.92)]"><svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M8 4l6 6-6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg></button>}
 
-      <div
-        className="grid max-h-[92vh] w-full max-w-7xl gap-4 lg:grid-cols-[minmax(0,1fr)_320px]"
-        onClick={e => e.stopPropagation()}
-      >
-        <div className="flex min-h-[320px] items-center justify-center rounded-3xl border border-white/10 bg-black/30 p-2 md:p-4">
-          {image.is_video ? (
-            <video
-              key={image.id}
-              src={`/images/${image.file_path}`}
-              className="max-h-[78vh] max-w-full rounded-2xl"
-              controls
-              autoPlay
-              loop
-            />
-          ) : (
-            <img
-              key={image.id}
-              src={`/images/${image.file_path}`}
-              alt=""
-              className="max-h-[78vh] max-w-full rounded-2xl object-contain"
-            />
-          )}
-        </div>
-
-        <aside className="flex flex-col justify-between rounded-3xl border border-white/10 bg-white/5 p-5 backdrop-blur-md">
-          <div>
-            <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-white/80">
-              <span className={`h-2 w-2 rounded-full ${meta.dotClass}`} />
-              <span>{meta.label}</span>
-            </div>
-
-            <div className="mt-4 space-y-4">
-              <div>
-                <div className="text-xs uppercase tracking-wide text-white/40">ID</div>
-                <div className="mt-1 break-all text-sm text-white/90">{image.source_id}</div>
+      <div className="relative z-10 grid max-h-[calc(100vh-2rem)] w-full max-w-7xl gap-4 lg:grid-cols-[minmax(0,1.3fr)_380px] max-md:grid-rows-[1fr_auto]" onClick={e => e.stopPropagation()}>
+        <section className="editorial-panel overflow-hidden rounded-[30px] p-3 md:p-4">
+          <div className={`relative flex min-h-[40vh] items-center justify-center rounded-[24px] bg-[rgba(255,255,255,0.03)] ${zoomed ? 'overflow-auto' : 'overflow-hidden'}`}
+            onClick={e => {
+              e.stopPropagation()
+              if (!image.is_video) setZoomed(z => !z)
+            }}
+          >
+            {image.is_video ? (
+              <video src={`/images/${image.file_path}`} controls autoPlay className="max-h-[78vh] max-w-full rounded-[20px]" />
+            ) : (
+              <img
+                src={`/images/${image.file_path}`}
+                alt={image.source_id}
+                className={`rounded-[20px] cursor-zoom-in transition-transform duration-200 ${zoomed ? 'max-h-none max-w-none object-none cursor-zoom-out' : 'max-h-[55vh] md:max-h-[78vh] max-w-full object-contain'}`}
+              />
+            )}
+            {!image.is_video && !zoomed && (
+              <div className="absolute bottom-3 right-3 rounded-full border border-white/10 bg-[rgba(19,15,12,0.72)] px-2.5 py-1 text-[10px] text-white/58 backdrop-blur-sm pointer-events-none">
+                点击放大 · 按 Z 切换
               </div>
+            )}
+          </div>
+        </section>
 
-              {image.date && (
-                <div>
-                  <div className="text-xs uppercase tracking-wide text-white/40">日期</div>
-                  <div className="mt-1 text-sm text-white/80">{image.date}</div>
-                </div>
-              )}
+        {/* Mobile metadata: collapsible bottom panel on md- screens */}
+        <aside className="editorial-panel flex flex-col overflow-hidden rounded-[30px] max-md:max-h-[38vh] max-md:overflow-y-auto lg:max-h-[calc(100vh-2rem)]">
 
-              <div>
-                <div className="text-xs uppercase tracking-wide text-white/40">文件</div>
-                <div className="mt-1 break-all text-sm text-white/70">{image.file_path}</div>
+          <div className="border-b border-[var(--line)] px-5 py-4">
+            <div className="micro-label">Archive Entry</div>
+            <div className="mt-2 flex items-start gap-3">
+              <div className="min-w-0 flex-1">
+                <h2 className="editorial-title truncate text-2xl text-[var(--text)]">{image.source_id}</h2>
+                <p className="mt-2 text-sm leading-6 text-[var(--muted)]">来源 {meta.label} · {image.date || '未记录日期'}</p>
               </div>
-
-              {/* Auto Tags */}
-              <div>
-                <div className="text-xs uppercase tracking-wide text-white/40">自动标签</div>
-                {tagsLoading ? (
-                  <div className="mt-2 text-xs text-white/40 animate-pulse">加载中…</div>
-                ) : autoTags && autoTags.found ? (
-                  <div className="mt-2 max-h-[200px] space-y-2 overflow-y-auto scrollbar-thin">
-                    {/* Rating */}
-                    {autoTags.rating && (
-                      <div className="flex flex-wrap gap-1.5">
-                        {Object.entries(autoTags.rating)
-                          .sort(([, a], [, b]) => b - a)
-                          .slice(0, 1)
-                          .map(([r]) => (
-                            <span
-                              key={r}
-                              className={`rounded-full border px-2 py-0.5 text-[11px] font-medium ${RATING_COLORS[r] || 'border-white/10 bg-white/5 text-white/70'}`}
-                            >
-                              {r}
-                            </span>
-                          ))}
-                      </div>
-                    )}
-                    {/* Characters */}
-                    {autoTags.characters && Object.keys(autoTags.characters).length > 0 && (
-                      <div className="flex flex-wrap gap-1.5">
-                        {Object.entries(autoTags.characters)
-                          .sort(([, a], [, b]) => b - a)
-                          .map(([tag, score]) => (
-                            <span
-                              key={tag}
-                              className="rounded-full border border-purple-500/30 bg-purple-500/10 px-2 py-0.5 text-[11px] text-purple-300"
-                            >
-                              {tag}
-                              <span className="ml-1 text-purple-400/50">{(score * 100).toFixed(0)}%</span>
-                            </span>
-                          ))}
-                      </div>
-                    )}
-                    {/* General tags */}
-                    {autoTags.general && Object.keys(autoTags.general).length > 0 && (
-                      <div className="flex flex-wrap gap-1.5">
-                        {Object.entries(autoTags.general)
-                          .sort(([, a], [, b]) => b - a)
-                          .map(([tag, score]) => (
-                            <span
-                              key={tag}
-                              className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[11px] text-white/70"
-                            >
-                              {tag}
-                              <span className="ml-1 text-white/35">{(score * 100).toFixed(0)}%</span>
-                            </span>
-                          ))}
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <div className="mt-2 text-xs text-white/30">暂未打标</div>
-                )}
-              </div>
+              <span className="rounded-full border border-[var(--line)] bg-[rgba(255,255,255,0.03)] px-3 py-1 text-[11px] uppercase tracking-[0.18em] text-[var(--muted)]">{image.is_video ? 'Video' : 'Image'}</span>
             </div>
           </div>
 
-          <div className="mt-6 space-y-3">
-            <div className="grid grid-cols-2 gap-2 text-sm">
-              <a
-                href={sourceLink}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-center text-white/85 transition-colors hover:bg-white/10"
-              >
-                打开来源页
-              </a>
-              <a
-                href={`/images/${image.file_path}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-center text-white/85 transition-colors hover:bg-white/10"
-              >
-                原图/原视频
-              </a>
-            </div>
+          <div className="flex-1 space-y-5 overflow-y-auto px-5 py-4">
+            <section>
+              <div className="text-[11px] uppercase tracking-[0.22em] text-[var(--muted)]">文件</div>
+              <div className="mt-2 break-all rounded-[20px] border border-[var(--line)] bg-[rgba(255,255,255,0.03)] px-4 py-3 text-sm text-[var(--text)] opacity-[0.88]">{image.file_path}</div>
+            </section>
 
-            {images.length > 1 && (
-              <div className="rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs text-white/60">
-                第 {currentIndex + 1} / {images.length} 项 · ← → 切换 · Esc 关闭
-              </div>
+            {(image.vision_score != null || multiScores) && (
+              <section>
+                <div className="text-[11px] uppercase tracking-[0.22em] text-[var(--muted)]">Vision Score</div>
+                <div className="mt-2 rounded-[20px] border border-[var(--line)] bg-[rgba(255,255,255,0.03)] px-4 py-3">
+                  {scoreEntries.length ? (
+                    <div className="space-y-3">
+                      {scoreEntries.map((entry, idx) => (
+                        <div key={entry.model || idx}>
+                          <div className="flex items-center justify-between gap-3 text-xs text-white/72">
+                            <span>{entry.model}</span>
+                            <span>{entry.score.toFixed(3)}</span>
+                          </div>
+                          {renderScoreBar(entry.score)}
+                        </div>
+                      ))}
+                    </div>
+                  ) : image.vision_score != null ? renderScoreBar(image.vision_score) : null}
+                </div>
+              </section>
             )}
+
+            <section>
+              <div className="text-[11px] uppercase tracking-[0.22em] text-[var(--muted)]">自动标签</div>
+              <div className="mt-2 rounded-[20px] border border-[var(--line)] bg-[rgba(255,255,255,0.03)] px-4 py-3">
+                {tagsLoading ? (
+                  <div className="flex flex-wrap gap-1.5">
+                    {[60, 48, 72, 40, 56].map((w, i) => (
+                      <div key={i} className="h-5 animate-pulse rounded-full bg-white/10" style={{ width: `${w}px` }} />
+                    ))}
+                  </div>
+                ) : autoTags && autoTags.found ? <div className="space-y-3">{autoTags.rating && <div className="flex flex-wrap gap-1.5">{Object.entries(autoTags.rating).sort(([, a], [, b]) => b - a).slice(0, 1).map(([rating]) => <span key={rating} className={`rounded-full border px-2.5 py-1 text-[11px] font-medium ${RATING_COLORS[rating] || 'border-white/10 bg-white/5 text-white/70'}`}>{rating}</span>)}</div>}{autoTags.characters && Object.keys(autoTags.characters).length > 0 && <div className="flex flex-wrap gap-1.5">{Object.entries(autoTags.characters).sort(([, a], [, b]) => b - a).map(([tag, score]) => <span key={tag} className="rounded-full border border-[var(--line)] bg-[rgba(159,91,82,0.14)] px-2.5 py-1 text-[11px] text-[var(--text)]">{tag}<span className="ml-1 text-[var(--muted)]">{(score * 100).toFixed(0)}%</span></span>)}</div>}{autoTags.general && Object.keys(autoTags.general).length > 0 && <div className="flex flex-wrap gap-1.5">{Object.entries(autoTags.general).sort(([, a], [, b]) => b - a).map(([tag, score]) => <span key={tag} className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-white/76">{tag}<span className="ml-1 text-white/40">{(score * 100).toFixed(0)}%</span></span>)}</div>}</div> : <div className="text-xs text-[var(--muted)]">暂未打标</div>}
+              </div>
+            </section>
+          </div>
+
+          <div className="border-t border-[var(--line)] px-5 py-4">
+            <div className="grid grid-cols-2 gap-2 text-sm">
+              <a href={sourceLink} target="_blank" rel="noopener noreferrer" className="rounded-[18px] border border-[var(--line)] bg-[rgba(255,255,255,0.03)] px-3 py-2 text-center text-[var(--text)] transition-colors hover:bg-[rgba(255,255,255,0.07)]">打开来源页</a>
+              <a href={`/images/${image.file_path}`} target="_blank" rel="noopener noreferrer" className="rounded-[18px] border border-[var(--line)] bg-[rgba(255,255,255,0.03)] px-3 py-2 text-center text-[var(--text)] transition-colors hover:bg-[rgba(255,255,255,0.07)]">查看原文件</a>
+            </div>
+            {images.length > 1 && <div className="mt-3 rounded-[18px] border border-[var(--line)] bg-[rgba(0,0,0,0.16)] px-3 py-2 text-xs text-[var(--muted)]">第 {currentIndex + 1} / {images.length} 项 · ← → 切换 · Esc 关闭</div>}
           </div>
         </aside>
       </div>

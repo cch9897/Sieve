@@ -1,8 +1,7 @@
 import { useMemo } from 'react'
 import { getSourceMeta } from '../sourceMeta'
-
-type GalleryMode = 'infinite' | 'paged'
-type MediaFilter = '' | 'image' | 'video'
+import type { GalleryMode, MediaFilter } from '../types'
+import FilterChip from './FilterChip'
 
 interface FilterBarProps {
   sources: string[]
@@ -21,12 +20,14 @@ interface FilterBarProps {
   onModeChange: (mode: GalleryMode) => void
   expanded: boolean
   onExpandedChange: (expanded: boolean | ((prev: boolean) => boolean)) => void
+  searchQuery?: string
+  onSearchChange?: (q: string) => void
 }
 
 export default function FilterBar({
   sources, sourceCounts, dates, selectedSource, selectedDate, selectedMedia, sort,
   onSourceChange, onDateChange, onMediaChange, onSortChange, total,
-  mode, onModeChange, expanded, onExpandedChange,
+  mode, onModeChange, expanded, onExpandedChange, searchQuery, onSearchChange,
 }: FilterBarProps) {
   const activeCount = useMemo(() => {
     let count = 0
@@ -38,6 +39,7 @@ export default function FilterBar({
   }, [selectedSource, selectedDate, selectedMedia, sort])
 
   const clearAll = () => {
+    onSearchChange?.('')
     onSourceChange('')
     onDateChange('')
     onMediaChange('')
@@ -45,169 +47,158 @@ export default function FilterBar({
   }
 
   return (
-    <div className="sticky top-[72px] z-30 border-b border-dark-700/40 bg-dark-950/72 backdrop-blur-xl md:top-16">
-      <div className="mx-auto max-w-[1920px] px-4 py-3">
-        <div className="flex flex-col gap-3">
-          {/* Top row: filter toggle + mode switch + pills */}
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              onClick={() => onExpandedChange(v => !v)}
-              className={[
-                'inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm transition-colors',
-                activeCount > 0 || expanded
-                  ? 'border-blue-500/30 bg-blue-500/10 text-blue-200'
-                  : 'border-dark-700 bg-dark-900 text-dark-300 hover:border-dark-600 hover:text-dark-100',
-              ].join(' ')}
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M3 5h18" /><path d="M6 12h12" /><path d="M10 19h4" />
-              </svg>
-              筛选
+    <div className="sticky z-30 px-3 pt-3 md:top-[calc(var(--header-height)+10px)] md:px-6 md:pt-4 top-[calc(var(--header-height)+8px)]">
+      <div aria-live="polite" aria-atomic="true" className="sr-only">
+        {`显示 ${total} 项`}
+      </div>
+      <div className="editorial-panel mx-auto max-w-[1920px] rounded-[28px] px-4 py-4 md:px-6 md:py-5">
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+            <div>
+              <div className="micro-label">Gallery Filters</div>
+              <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-[var(--muted)]">
+                <InfoPill label="总藏品" value={`${total} 项`} />
+                <InfoPill label="当前模式" value={mode === 'infinite' ? 'Infinite Flow' : 'Paged Sheets'} />
+                {selectedSource && <FilterChip label="来源" value={getSourceMeta(selectedSource).label} onDismiss={() => onSourceChange('')} />}
+                {selectedDate && <FilterChip label="日期" value={selectedDate} onDismiss={() => onDateChange('')} />}
+                {selectedMedia && <FilterChip label="媒介" value={selectedMedia === 'image' ? '静态图像' : '动态影像'} onDismiss={() => onMediaChange('')} />}
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                onClick={() => onExpandedChange(v => !v)}
+                aria-expanded={expanded}
+                aria-pressed={expanded || activeCount > 0}
+                className={[
+                  'xl:hidden inline-flex items-center gap-2 rounded-2xl border px-4 py-2.5 text-sm transition-all duration-200',
+                  activeCount > 0 || expanded
+                    ? 'border-[var(--line-strong)] bg-[var(--accent-soft)] text-[var(--text)]'
+                    : 'border-[var(--line)] bg-[rgba(255,255,255,0.03)] text-[var(--muted)] hover:text-[var(--text)]',
+                ].join(' ')}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M4 7h16" /><path d="M7 12h10" /><path d="M10 17h4" />
+                </svg>
+                打开筛选台
+                {activeCount > 0 && (
+                  <span className="rounded-full border border-[var(--line-strong)] bg-black/20 px-1.5 py-0.5 text-[10px] text-[var(--text)]">{activeCount}</span>
+                )}
+              </button>
+
+              <div className="inline-flex items-center rounded-2xl border border-[var(--line)] bg-[rgba(255,255,255,0.03)] p-1 text-sm">
+                <ModeButton active={mode === 'infinite'} onClick={() => onModeChange('infinite')}>无限滚动</ModeButton>
+                <ModeButton active={mode === 'paged'} onClick={() => onModeChange('paged')}>分页</ModeButton>
+              </div>
+
+              <div className="inline-flex items-center rounded-2xl border border-[var(--line)] bg-[rgba(255,255,255,0.03)] p-1 text-sm">
+                <ModeButton active={!selectedMedia} onClick={() => onMediaChange('')}>全部</ModeButton>
+                <ModeButton active={selectedMedia === 'image'} onClick={() => onMediaChange('image')}>图片</ModeButton>
+                <ModeButton active={selectedMedia === 'video'} onClick={() => onMediaChange('video')}>视频</ModeButton>
+              </div>
+
               {activeCount > 0 && (
-                <span className="rounded-full bg-blue-400/20 px-1.5 py-0.5 text-[10px] text-blue-200">{activeCount}</span>
+                <button
+                  onClick={clearAll}
+                  className="rounded-2xl border border-[var(--line)] px-3 py-2 text-xs uppercase tracking-[0.18em] text-[var(--muted)] transition-colors hover:text-[var(--text)]"
+                >
+                  Reset
+                </button>
               )}
-            </button>
-
-            {/* Mode switch */}
-            <div className="inline-flex items-center rounded-xl border border-dark-700/60 bg-dark-900/90 p-1 text-sm">
-              <button
-                onClick={() => onModeChange('infinite')}
-                className={['rounded-lg px-3 py-1.5 transition-colors', mode === 'infinite' ? 'bg-dark-700 text-dark-50' : 'text-dark-400 hover:text-dark-100'].join(' ')}
-              >
-                无限滚动
-              </button>
-              <button
-                onClick={() => onModeChange('paged')}
-                className={['rounded-lg px-3 py-1.5 transition-colors', mode === 'paged' ? 'bg-dark-700 text-dark-50' : 'text-dark-400 hover:text-dark-100'].join(' ')}
-              >
-                分页
-              </button>
             </div>
-
-            {/* Media type quick filter */}
-            <div className="inline-flex items-center rounded-xl border border-dark-700/60 bg-dark-900/90 p-1 text-sm">
-              <button
-                onClick={() => onMediaChange('')}
-                className={['rounded-lg px-2.5 py-1.5 transition-colors', !selectedMedia ? 'bg-dark-700 text-dark-50' : 'text-dark-400 hover:text-dark-100'].join(' ')}
-              >
-                全部
-              </button>
-              <button
-                onClick={() => onMediaChange('image')}
-                className={['rounded-lg px-2.5 py-1.5 transition-colors', selectedMedia === 'image' ? 'bg-dark-700 text-dark-50' : 'text-dark-400 hover:text-dark-100'].join(' ')}
-              >
-                🖼 图片
-              </button>
-              <button
-                onClick={() => onMediaChange('video')}
-                className={['rounded-lg px-2.5 py-1.5 transition-colors', selectedMedia === 'video' ? 'bg-dark-700 text-dark-50' : 'text-dark-400 hover:text-dark-100'].join(' ')}
-              >
-                🎬 视频
-              </button>
-            </div>
-
-            {/* Info pills */}
-            <div className="hidden flex-wrap items-center gap-2 text-xs text-dark-500 sm:flex">
-              <InfoPill label="总数" value={`${total} 张`} />
-              {selectedSource && <InfoPill label="来源" value={getSourceMeta(selectedSource).label} />}
-              {selectedDate && <InfoPill label="日期" value={selectedDate} />}
-              {sort !== 'newest' && <InfoPill label="排序" value={sortLabel(sort)} />}
-            </div>
-
-            {activeCount > 0 && (
-              <button
-                onClick={clearAll}
-                className="ml-auto rounded-lg px-2.5 py-1.5 text-xs text-dark-400 hover:bg-dark-900 hover:text-dark-100"
-              >
-                清空筛选
-              </button>
-            )}
           </div>
 
-          {/* Expanded filter panel */}
-          {expanded && (
-            <div className="grid gap-3 rounded-2xl border border-dark-700/60 bg-dark-900/80 p-3 shadow-sm lg:grid-cols-[1.8fr_220px_180px]">
-              <section>
-                <div className="mb-2 text-xs font-medium uppercase tracking-wide text-dark-500">来源</div>
-                <div className="flex flex-wrap gap-2">
-                  <SourceChip
-                    active={!selectedSource}
-                    label="全部"
-                    count={total}
-                    onClick={() => onSourceChange('')}
-                  />
-                  {sources.map(source => (
-                    <SourceChip
-                      key={source}
-                      active={selectedSource === source}
-                      label={getSourceMeta(source).label}
-                      count={sourceCounts?.[source]}
-                      className={getSourceMeta(source).chipClass}
-                      onClick={() => onSourceChange(selectedSource === source ? '' : source)}
-                    />
-                  ))}
-                </div>
-              </section>
-
-              <label className="block">
-                <div className="mb-2 text-xs font-medium uppercase tracking-wide text-dark-500">日期</div>
-                <select
-                  value={selectedDate}
-                  onChange={e => onDateChange(e.target.value)}
-                  className="w-full rounded-xl border border-dark-700 bg-dark-950 px-3 py-2 text-sm text-dark-100 outline-none transition-colors focus:border-dark-500"
+          {onSearchChange && (
+            <div className="flex items-center gap-2 pt-1 first:pt-0">
+              <input
+                type="text"
+                value={searchQuery || ''}
+                onChange={e => onSearchChange(e.target.value)}
+                placeholder="搜索 source_id 或 文件路径…"
+                aria-label="搜索图片"
+                className={`${fieldClassName} max-w-sm`}
+              />
+              {searchQuery && (
+                <button
+                  onClick={() => onSearchChange('')}
+                  aria-label="清除搜索"
+                  className="rounded-2xl border border-[var(--line)] px-3 py-2 text-xs text-[var(--muted)] transition-colors hover:text-[var(--text)]"
                 >
-                  <option value="">全部日期</option>
-                  {dates.map(d => (<option key={d} value={d}>{d}</option>))}
+                  清除
+                </button>
+              )}
+            </div>
+          )}
+
+          <div className={`grid gap-3 overflow-hidden transition-all duration-300 rounded-[24px] border border-[var(--line)] bg-[rgba(255,255,255,0.025)] p-3 md:grid-cols-2 xl:grid-cols-4 ${expanded ? 'max-h-[500px] opacity-100 mt-3' : 'max-h-0 opacity-0 mt-0 p-0 border-0 xl:max-h-[500px] xl:opacity-100 xl:mt-3 xl:p-3 xl:border'}`}>
+              <Field label="来源">
+                <select value={selectedSource} onChange={e => onSourceChange(e.target.value)} className={fieldClassName}>
+                  <option value="">全部来源</option>
+                  {sources.map(source => {
+                    const meta = getSourceMeta(source)
+                    const count = sourceCounts?.[source]
+                    return (
+                      <option key={source} value={source}>
+                        {meta.label}{typeof count === 'number' ? ` (${count})` : ''}
+                      </option>
+                    )
+                  })}
                 </select>
-              </label>
+              </Field>
 
-              <label className="block">
-                <div className="mb-2 text-xs font-medium uppercase tracking-wide text-dark-500">排序</div>
-                <select
-                  value={sort}
-                  onChange={e => onSortChange(e.target.value)}
-                  className="w-full rounded-xl border border-dark-700 bg-dark-950 px-3 py-2 text-sm text-dark-100 outline-none transition-colors focus:border-dark-500"
-                >
+              <Field label="日期">
+                <select value={selectedDate} onChange={e => onDateChange(e.target.value)} className={fieldClassName}>
+                  <option value="">全部日期</option>
+                  {dates.map(date => <option key={date} value={date}>{date}</option>)}
+                </select>
+              </Field>
+
+              <Field label="排序">
+                <select value={sort} onChange={e => onSortChange(e.target.value)} className={fieldClassName}>
                   <option value="newest">最新优先</option>
                   <option value="oldest">最早优先</option>
                 </select>
-              </label>
+              </Field>
             </div>
-          )}
         </div>
       </div>
     </div>
   )
 }
 
-function SourceChip({ active, label, count, className, onClick }: {
-  active: boolean; label: string; count?: number; className?: string; onClick: () => void
-}) {
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="block">
+      <div className="mb-2 text-[11px] uppercase tracking-[0.2em] text-[var(--muted)]">{label}</div>
+      {children}
+    </label>
+  )
+}
+
+function ModeButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
     <button
       onClick={onClick}
+      aria-pressed={active}
       className={[
-        'inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm transition-all',
+        'rounded-[14px] px-3 py-1.5 transition-all duration-200',
         active
-          ? className || 'border-dark-500 bg-dark-700 text-dark-100'
-          : 'border-dark-700 bg-dark-950 text-dark-400 hover:border-dark-600 hover:text-dark-100',
+          ? 'bg-[linear-gradient(180deg,rgba(214,165,93,0.24),rgba(159,91,82,0.14))] text-[var(--text)]'
+          : 'text-[var(--muted)] hover:text-[var(--text)]',
       ].join(' ')}
     >
-      <span>{label}</span>
-      {count !== undefined && <span className="text-[11px] opacity-70">{count}</span>}
+      {children}
     </button>
   )
 }
 
 function InfoPill({ label, value }: { label: string; value: string }) {
   return (
-    <span className="inline-flex items-center gap-1 rounded-full border border-dark-800 bg-dark-900 px-2.5 py-1 text-xs text-dark-400">
-      <span className="text-dark-600">{label}</span>
-      <span className="text-dark-300">{value}</span>
+    <span className="inline-flex items-center gap-2 rounded-full border border-[var(--line)] bg-[rgba(255,255,255,0.03)] px-3 py-1.5">
+      <span className="text-[10px] uppercase tracking-[0.22em] text-[var(--muted)]/80">{label}</span>
+      <span className="text-[13px] text-[var(--text)]">{value}</span>
     </span>
   )
 }
 
-function sortLabel(sort: string) {
-  return sort === 'oldest' ? '最早优先' : '最新优先'
-}
+const fieldClassName = 'w-full appearance-none rounded-2xl border border-[var(--line)] bg-[rgba(14,12,10,0.92)] px-4 py-3 text-sm text-[var(--text)] outline-none transition focus:border-[var(--line-strong)] focus-visible:ring-2 focus-visible:ring-[var(--accent)] cursor-pointer bg-[length:12px_8px] bg-[right_12px_center] bg-no-repeat pr-10'

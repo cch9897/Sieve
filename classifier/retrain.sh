@@ -17,12 +17,16 @@ else
     echo "  Skipped (no TWITTER_DIR or tag_twitter.py not found)"
 fi
 
-# 2. Retrain
-echo "=== Step 2: Training classifier ==="
+# 2. Sync training cache (danbooru labels etc.)
+echo "=== Step 2: Syncing training cache ==="
+python3 "$SCRIPT_DIR/training_cache.py"
+
+# 3. Retrain
+echo "=== Step 3: Training classifier ==="
 python3 "$SCRIPT_DIR/train_classifier.py"
 
-# 3. Restart service to load new model
-echo "=== Step 3: Restarting sieve ==="
+# 4. Restart service to load new model
+echo "=== Step 4: Restarting sieve ==="
 systemctl --user restart sieve || echo "Service restart skipped (not installed)"
 
 echo "Done! Model retrained and service restarted."

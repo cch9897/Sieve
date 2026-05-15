@@ -4,6 +4,7 @@ from pathlib import Path
 # Load .env file if python-dotenv is available
 try:
     from dotenv import load_dotenv
+
     load_dotenv(Path(__file__).parent.parent / ".env")
 except ImportError:
     pass
@@ -11,7 +12,10 @@ except ImportError:
 PROJECT_ROOT = Path(__file__).parent.parent
 
 # Data sources
-CRAWLER_DIR = Path(os.environ.get("CRAWLER_DIR", ""))
+_raw_crawler_dir = os.environ.get("CRAWLER_DIR", "")
+if not _raw_crawler_dir:
+    raise ValueError("CRAWLER_DIR environment variable must be set to the booru-crawler data directory")
+CRAWLER_DIR = Path(_raw_crawler_dir)
 if not CRAWLER_DIR.is_absolute():
     CRAWLER_DIR = PROJECT_ROOT / CRAWLER_DIR
 DB_PATH = CRAWLER_DIR / "dedup.db"
@@ -35,6 +39,9 @@ PREFERENCE_MODEL_PATH = Path(_model_path) if Path(_model_path).is_absolute() els
 
 _cnn_path = os.environ.get("CNN_MODEL_PATH", "classifier/model_aesthetic.pt")
 CNN_MODEL_PATH = Path(_cnn_path) if Path(_cnn_path).is_absolute() else PROJECT_ROOT / _cnn_path
+
+_siglip2_path = os.environ.get("SIGLIP2_MODEL_PATH", "classifier/model_siglip2_naflex.pt")
+SIGLIP2_MODEL_PATH = Path(_siglip2_path) if Path(_siglip2_path).is_absolute() else PROJECT_ROOT / _siglip2_path
 
 # Candidates DB
 _candidates = os.environ.get("CANDIDATES_DB", "backend/candidates.db")

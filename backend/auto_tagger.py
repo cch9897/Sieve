@@ -16,7 +16,6 @@ import json
 import logging
 import os
 import sqlite3
-import sys
 import time
 from pathlib import Path
 
@@ -26,6 +25,7 @@ os.environ.setdefault("OPENBLAS_NUM_THREADS", "4")
 os.environ.setdefault("MKL_NUM_THREADS", "4")
 os.environ.setdefault("ONNXRUNTIME_NUM_THREADS", "4")
 
+import state as _state
 from config import CRAWLER_DIR, DB_PATH, LABELS_DB_PATH
 
 logging.basicConfig(
@@ -35,11 +35,12 @@ logging.basicConfig(
 )
 log = logging.getLogger("auto_tagger")
 
-IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".avif"}
+IMAGE_EXTS = _state.IMAGE_EXTS
 
 # ---------------------------------------------------------------------------
 # DB helpers
 # ---------------------------------------------------------------------------
+
 
 def init_auto_tags_table(labels_db: str):
     """Create auto_tags table if not exists."""
@@ -72,9 +73,7 @@ def get_untagged_image_ids(dedup_db: str, labels_db: str, limit: int) -> list[tu
     # Read candidate images from dedup DB (read-only)
     dconn = sqlite3.connect(f"file:{dedup_db}?mode=ro", uri=True)
     dconn.row_factory = sqlite3.Row
-    rows = dconn.execute(
-        "SELECT id, file_path FROM images WHERE file_path IS NOT NULL ORDER BY id"
-    ).fetchall()
+    rows = dconn.execute("SELECT id, file_path FROM images WHERE file_path IS NOT NULL ORDER BY id").fetchall()
     dconn.close()
 
     candidates = []
@@ -95,8 +94,9 @@ def get_untagged_image_ids(dedup_db: str, labels_db: str, limit: int) -> list[tu
     return candidates
 
 
-def save_tags(labels_db: str, image_id: int, rating: dict, general: dict,
-              characters: dict, model_name: str, threshold: float):
+def save_tags(
+    labels_db: str, image_id: int, rating: dict, general: dict, characters: dict, model_name: str, threshold: float
+):
     """Save auto-tag results to DB."""
     # Top tags: sorted by confidence, as comma-separated string for quick display
     all_tags = {**general, **characters}
@@ -151,13 +151,11 @@ def get_progress(dedup_db: str, labels_db: str) -> tuple[int, int]:
 
     dconn = sqlite3.connect(f"file:{dedup_db}?mode=ro", uri=True)
     # Count only images (not videos)
-    total = dconn.execute("""
-        SELECT COUNT(*) FROM images
-        WHERE file_path IS NOT NULL
-          AND file_path NOT LIKE '%.mp4'
-          AND file_path NOT LIKE '%.webm'
-          AND file_path NOT LIKE '%.mkv'
-    """).fetchone()[0]
+    _video_exclude_sql, _video_exclude_params = _state.video_filter_sql()
+    total = dconn.execute(
+        f"SELECT COUNT(*) FROM images WHERE file_path IS NOT NULL AND {_video_exclude_sql}",
+        _video_exclude_params,
+    ).fetchone()[0]
     dconn.close()
     return tagged, total
 
@@ -166,8 +164,8 @@ def get_progress(dedup_db: str, labels_db: str) -> tuple[int, int]:
 # Main
 # ---------------------------------------------------------------------------
 
-def run(batch: int = 50, sleep_sec: float = 1.0, threshold: float = 0.35,
-        model_name: str = "SwinV2_v3"):
+
+def run(batch: int = 50, sleep_sec: float = 1.0, threshold: float = 0.35, model_name: str = "SwinV2_v3"):
     init_auto_tags_table(str(LABELS_DB_PATH))
 
     tagged, total = get_progress(str(DB_PATH), str(LABELS_DB_PATH))
@@ -182,6 +180,9 @@ def run(batch: int = 50, sleep_sec: float = 1.0, threshold: float = 0.35,
 
     # Lazy import to delay model loading
     from imgutils.tagging import get_wd14_tags
+    from PIL import Image as _PILImage
+
+    _PILImage.MAX_IMAGE_PIXELS = 80_000_000  # skip decompression bombs
 
     success = 0
     errors = 0
@@ -189,6 +190,11 @@ def run(batch: int = 50, sleep_sec: float = 1.0, threshold: float = 0.35,
     for i, (image_id, file_path) in enumerate(candidates):
         full_path = CRAWLER_DIR / file_path
         try:
+            # Skip images with too many pixels to avoid OOM
+            with _PILImage.open(str(full_path)) as _img:
+                _w, _h = _img.size
+                if _w * _h > 80_000_000:
+                    raise ValueError(f"Image too large: {_w}x{_h} = {_w * _h} pixels")
             rating, general, characters = get_wd14_tags(
                 str(full_path),
                 model_name=model_name,
@@ -197,17 +203,16 @@ def run(batch: int = 50, sleep_sec: float = 1.0, threshold: float = 0.35,
                 no_underline=True,
                 drop_overlap=True,
             )
-            save_tags(str(LABELS_DB_PATH), image_id, rating, general, characters,
-                      model_name, threshold)
+            save_tags(str(LABELS_DB_PATH), image_id, rating, general, characters, model_name, threshold)
             success += 1
 
             top3 = sorted(general.items(), key=lambda x: x[1], reverse=True)[:3]
             top3_str = ", ".join(f"{t[0]}({t[1]:.2f})" for t in top3)
-            log.info(f"  [{i+1}/{len(candidates)}] #{image_id} -> {top3_str}")
+            log.info(f"  [{i + 1}/{len(candidates)}] #{image_id} -> {top3_str}")
 
         except Exception as e:
             errors += 1
-            log.warning(f"  [{i+1}/{len(candidates)}] #{image_id} FAILED: {e}")
+            log.warning(f"  [{i + 1}/{len(candidates)}] #{image_id} FAILED: {e}")
             # Mark as error so we don't retry every run
             save_error(str(LABELS_DB_PATH), image_id, model_name, threshold, str(e))
 
@@ -223,15 +228,12 @@ def run(batch: int = 50, sleep_sec: float = 1.0, threshold: float = 0.35,
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Incremental WD14 auto-tagger")
-    parser.add_argument("--batch", type=int, default=50,
-                        help="Max images per run (default: 50)")
-    parser.add_argument("--sleep", type=float, default=1.0,
-                        help="Sleep seconds between images (default: 1.0)")
-    parser.add_argument("--threshold", type=float, default=0.35,
-                        help="General tag confidence threshold (default: 0.35)")
-    parser.add_argument("--model", type=str, default="SwinV2_v3",
-                        help="WD14 model name (default: SwinV2_v3)")
+    parser.add_argument("--batch", type=int, default=50, help="Max images per run (default: 50)")
+    parser.add_argument("--sleep", type=float, default=1.0, help="Sleep seconds between images (default: 1.0)")
+    parser.add_argument(
+        "--threshold", type=float, default=0.35, help="General tag confidence threshold (default: 0.35)"
+    )
+    parser.add_argument("--model", type=str, default="SwinV2_v3", help="WD14 model name (default: SwinV2_v3)")
     args = parser.parse_args()
 
-    run(batch=args.batch, sleep_sec=args.sleep, threshold=args.threshold,
-        model_name=args.model)
+    run(batch=args.batch, sleep_sec=args.sleep, threshold=args.threshold, model_name=args.model)
