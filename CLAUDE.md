@@ -49,7 +49,15 @@ All config is env-based via `.env` at repo root (loaded by `backend/config.py` v
 2. **React SPA** (`frontend/`) — single-page app; all state in `App.tsx` persisted via `localStorage` under `sieve-ui-state`.
 3. **Classifier pipeline** (`classifier/`) — standalone scripts the backend launches as subprocesses (retrain, pack, prefetch, rescore, vision-score, tag-train).
 
-The backend is the orchestrator: ML-ops router endpoints spawn `classifier/*.sh` / `classifier/*.py` as `subprocess.Popen`, tracked by a process handle + `asyncio.Lock` pair in `state.py` (one pair per long-running job kind). Only one of each can run at a time.
+The backend is the orchestrator: ML-ops router endpoints spawn `classifier/*.sh` / `classifier/*.py` via `ManagedSubprocess` from `backend/subprocess_manager.py`, which wraps `subprocess.Popen` + an `asyncio.Lock` + log-tail buffer (one manager per long-running job kind, registered in `state._subprocesses`). Only one of each can run at a time.
+
+### Service layer (`backend/services/`)
+
+Routers stay thin; the heavy lifting lives next door:
+
+- `labeler_service.py` — label / unlabel / tag CRUD shared by `labeler` and `danbooru_labeler`.
+- `danbooru_candidates_repo.py` — read-only stats aggregations (buckets, histogram, CI) over `candidates.db`, used by `danbooru_recommend`.
+- `export_service.py` — `build_export_zip()` wraps `export_utils.build_zip_to_temp` + `StreamingResponse` for the two `/export/liked` endpoints.
 
 ### Three databases
 
@@ -83,10 +91,23 @@ Each file is a `APIRouter` included by `main.py`. Domains:
 
 All user-facing file serving goes through `state._safe_under_crawler(path)`, which resolves symlinks against `_ALLOWED_ROOTS`. The set is seeded with `CRAWLER_DIR.resolve()` and (if `$CRAWLER_DIR/downloads` is a symlink) its target's parent — this is intentional for NFS setups. When adding new file-serving endpoints, route through `_safe_under_crawler` and return 403 on failure; do not construct paths ad-hoc.
 
+For writes outside `CRAWLER_DIR` (e.g. the Danbooru likes downloader writing to `DANBOORU_LIKES_DIR`), don't reuse `_safe_under_crawler`: validate the extension with a strict regex *and* verify `dest.resolve().is_relative_to(root.resolve())`. See `routers/danbooru_labeler._is_safe_ext` and the `/danbooru/label/{id}` download path for the pattern.
+
 ### Tests
 
-`backend/tests/conftest.py` defines the canonical fixture stack: `tmp_crawler` builds a minimal `dedup.db` + fake PNG files in a tmpdir, `patch_config` monkeypatches every path in `config` and the resolved constants in `state`, `reset_state` zeroes out pools + model registry, and `app` builds a FastAPI app with a **no-ML lifespan** (it skips the `.pt` scan and joblib load). Use `client` (AsyncClient over ASGITransport) for endpoint tests. Never import models or run the real lifespan in tests.
+`backend/tests/conftest.py` defines the canonical fixture stack: `tmp_crawler` builds a minimal `dedup.db` + fake PNG files in a tmpdir, `patch_config` monkeypatches every path in `config` **and rebinds `CRAWLER_DIR` on already-imported modules** (`utils`, `state`, `auto_tagger`, …) that did `from config import CRAWLER_DIR` at import time, `reset_state` zeroes out pools + model registry + clears `_novel_meta_cache`, and `app` builds a FastAPI app with a **no-ML lifespan** (it skips the `.pt` scan and joblib load). Use `client` (AsyncClient over ASGITransport) for endpoint tests. Never import models or run the real lifespan in tests.
+
+Routers not mounted on the default test `app` (e.g. `danbooru_recommend`, `danbooru_candidates`) get a custom client fixture that also re-binds their module-level `*_DB_PATH` constants after the monkeypatch — see `test_danbooru_recommend.dr_client` / `test_danbooru_candidates.dc_client`.
 
 ### Frontend entry
 
-`frontend/src/App.tsx` is the only stateful component. Views (`gallery` / `novels` / `labeler` / `danbooru` / `stats`) are switched by keyboard shortcut or nav; each sub-view's state is round-tripped through `localStorage`. `api.ts` is a thin fetch wrapper — all requests go to relative `/api/...` paths (same origin, no CORS in prod). `types.ts` mirrors backend response shapes by hand; keep them in sync when changing API schemas.
+`frontend/src/App.tsx` orchestrates state and view switching but delegates work to hooks under `frontend/src/hooks/`:
+- `useGalleryFilters` / `useNovelFilters` — filter+sort state with localStorage persistence.
+- `useGallery` — image list fetch / pagination / infinite scroll, surfacing `errorKind` ('network' | 'empty') so the shell renders the right `EmptyState`.
+- `useTaskPoller` — generic polling for `ml_ops` long-running jobs.
+- `useFocusTrap` — modal focus containment, used by `Lightbox` and any dialog.
+- `usePersistedState` — typed `useState` mirrored to localStorage.
+
+View switching uses URL hash (`#gallery` / `#novels` / `#labeler` / `#danbooru` / `#stats`) with `pushState` + `popstate` so the browser back button works, and CSS [View Transitions API](https://developer.mozilla.org/docs/Web/API/View_Transitions_API) for a cross-fade between views.
+
+API requests go through `frontend/src/api/` (split into `core` + per-domain modules; `index.ts` re-exports). All requests are relative `/api/...` paths (same origin, no CORS in prod). `types.ts` mirrors backend response shapes by hand; keep them in sync when changing API schemas.

@@ -115,6 +115,15 @@ def patch_config(tmp_crawler, tmp_path, monkeypatch):
     monkeypatch.setattr(state, "THUMBS_DIR", tmp_crawler / ".thumbs")
     monkeypatch.setattr(state, "_ALLOWED_ROOTS", {tmp_crawler.resolve()})
 
+    # Modules that did `from config import CRAWLER_DIR` at import time hold a
+    # stale reference once we patch config — patch them too if already loaded.
+    import sys
+
+    for mod_name in ("utils", "state", "auto_tagger", "routers.thumbnails", "routers.labeler"):
+        mod = sys.modules.get(mod_name)
+        if mod is not None and hasattr(mod, "CRAWLER_DIR"):
+            monkeypatch.setattr(mod, "CRAWLER_DIR", tmp_crawler)
+
     return tmp_path
 
 
@@ -145,6 +154,9 @@ def reset_state(monkeypatch):
     monkeypatch.setattr(state, "_danbooru_labels_pool", None)
     monkeypatch.setattr(state, "_candidates_pool", None)
     monkeypatch.setattr(state, "_danbooru_client", None)
+    # Clear the novel metadata cache so files from a previous tmpdir
+    # do not bleed into the current test's results.
+    state._novel_meta_cache.clear()
 
 
 @pytest_asyncio.fixture()

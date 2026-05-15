@@ -210,7 +210,7 @@ async def prefetch_status():
 
 @router.post("/api/danbooru/prefetch/start")
 async def prefetch_start(
-    mode: str = Query("tag+vision", regex="^(tag\\+vision|vision-only)$"),
+    mode: str = Query("tag+vision", pattern="^(tag\\+vision|vision-only)$"),
     threshold: Optional[float] = Query(None, ge=0.0, le=1.0),
     model: Optional[str] = Query(None),
 ):
