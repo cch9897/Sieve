@@ -139,8 +139,8 @@ def _read_novel_meta(file_path: str, include_text: bool = False) -> dict:
                 return cached
 
     full_path = CRAWLER_DIR / file_path
-    if not full_path.exists():
-        full_path = Path(file_path)
+    if not state._safe_under_crawler(full_path):
+        return {}
     if not full_path.exists():
         return {}
     try:

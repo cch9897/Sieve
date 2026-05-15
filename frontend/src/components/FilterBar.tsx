@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import { getSourceMeta } from '../sourceMeta'
 import type { GalleryMode, MediaFilter } from '../types'
+import FilterChip from './FilterChip'
 
 interface FilterBarProps {
   sources: string[]
@@ -19,12 +20,14 @@ interface FilterBarProps {
   onModeChange: (mode: GalleryMode) => void
   expanded: boolean
   onExpandedChange: (expanded: boolean | ((prev: boolean) => boolean)) => void
+  searchQuery?: string
+  onSearchChange?: (q: string) => void
 }
 
 export default function FilterBar({
   sources, sourceCounts, dates, selectedSource, selectedDate, selectedMedia, sort,
   onSourceChange, onDateChange, onMediaChange, onSortChange, total,
-  mode, onModeChange, expanded, onExpandedChange,
+  mode, onModeChange, expanded, onExpandedChange, searchQuery, onSearchChange,
 }: FilterBarProps) {
   const activeCount = useMemo(() => {
     let count = 0
@@ -36,6 +39,7 @@ export default function FilterBar({
   }, [selectedSource, selectedDate, selectedMedia, sort])
 
   const clearAll = () => {
+    onSearchChange?.('')
     onSourceChange('')
     onDateChange('')
     onMediaChange('')
@@ -44,6 +48,9 @@ export default function FilterBar({
 
   return (
     <div className="sticky z-30 px-3 pt-3 md:top-[calc(var(--header-height)+10px)] md:px-6 md:pt-4 top-[calc(var(--header-height)+8px)]">
+      <div aria-live="polite" aria-atomic="true" className="sr-only">
+        {`显示 ${total} 项`}
+      </div>
       <div className="editorial-panel mx-auto max-w-[1920px] rounded-[28px] px-4 py-4 md:px-6 md:py-5">
         <div className="flex flex-col gap-4">
           <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
@@ -52,9 +59,9 @@ export default function FilterBar({
               <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-[var(--muted)]">
                 <InfoPill label="总藏品" value={`${total} 项`} />
                 <InfoPill label="当前模式" value={mode === 'infinite' ? 'Infinite Flow' : 'Paged Sheets'} />
-                {selectedSource && <InfoPill label="来源" value={getSourceMeta(selectedSource).label} />}
-                {selectedDate && <InfoPill label="日期" value={selectedDate} />}
-                {selectedMedia && <InfoPill label="媒介" value={selectedMedia === 'image' ? '静态图像' : '动态影像'} />}
+                {selectedSource && <FilterChip label="来源" value={getSourceMeta(selectedSource).label} onDismiss={() => onSourceChange('')} />}
+                {selectedDate && <FilterChip label="日期" value={selectedDate} onDismiss={() => onDateChange('')} />}
+                {selectedMedia && <FilterChip label="媒介" value={selectedMedia === 'image' ? '静态图像' : '动态影像'} onDismiss={() => onMediaChange('')} />}
               </div>
             </div>
 
@@ -64,7 +71,7 @@ export default function FilterBar({
                 aria-expanded={expanded}
                 aria-pressed={expanded || activeCount > 0}
                 className={[
-                  'inline-flex items-center gap-2 rounded-2xl border px-4 py-2.5 text-sm transition-all duration-200',
+                  'xl:hidden inline-flex items-center gap-2 rounded-2xl border px-4 py-2.5 text-sm transition-all duration-200',
                   activeCount > 0 || expanded
                     ? 'border-[var(--line-strong)] bg-[var(--accent-soft)] text-[var(--text)]'
                     : 'border-[var(--line)] bg-[rgba(255,255,255,0.03)] text-[var(--muted)] hover:text-[var(--text)]',
@@ -101,7 +108,29 @@ export default function FilterBar({
             </div>
           </div>
 
-          <div className={`grid gap-3 overflow-hidden transition-all duration-300 rounded-[24px] border border-[var(--line)] bg-[rgba(255,255,255,0.025)] p-3 md:grid-cols-2 xl:grid-cols-4 ${expanded ? 'max-h-[500px] opacity-100 mt-3' : 'max-h-0 opacity-0 mt-0 p-0 border-0'}`}>
+          {onSearchChange && (
+            <div className="flex items-center gap-2 pt-1 first:pt-0">
+              <input
+                type="text"
+                value={searchQuery || ''}
+                onChange={e => onSearchChange(e.target.value)}
+                placeholder="搜索 source_id 或 文件路径…"
+                aria-label="搜索图片"
+                className={`${fieldClassName} max-w-sm`}
+              />
+              {searchQuery && (
+                <button
+                  onClick={() => onSearchChange('')}
+                  aria-label="清除搜索"
+                  className="rounded-2xl border border-[var(--line)] px-3 py-2 text-xs text-[var(--muted)] transition-colors hover:text-[var(--text)]"
+                >
+                  清除
+                </button>
+              )}
+            </div>
+          )}
+
+          <div className={`grid gap-3 overflow-hidden transition-all duration-300 rounded-[24px] border border-[var(--line)] bg-[rgba(255,255,255,0.025)] p-3 md:grid-cols-2 xl:grid-cols-4 ${expanded ? 'max-h-[500px] opacity-100 mt-3' : 'max-h-0 opacity-0 mt-0 p-0 border-0 xl:max-h-[500px] xl:opacity-100 xl:mt-3 xl:p-3 xl:border'}`}>
               <Field label="来源">
                 <select value={selectedSource} onChange={e => onSourceChange(e.target.value)} className={fieldClassName}>
                   <option value="">全部来源</option>
@@ -172,4 +201,4 @@ function InfoPill({ label, value }: { label: string; value: string }) {
   )
 }
 
-const fieldClassName = 'w-full appearance-none rounded-2xl border border-[var(--line)] bg-[rgba(14,12,10,0.92)] px-4 py-3 text-sm text-[var(--text)] outline-none transition focus:border-[var(--line-strong)] cursor-pointer bg-[length:12px_8px] bg-[right_12px_center] bg-no-repeat pr-10'
+const fieldClassName = 'w-full appearance-none rounded-2xl border border-[var(--line)] bg-[rgba(14,12,10,0.92)] px-4 py-3 text-sm text-[var(--text)] outline-none transition focus:border-[var(--line-strong)] focus-visible:ring-2 focus-visible:ring-[var(--accent)] cursor-pointer bg-[length:12px_8px] bg-[right_12px_center] bg-no-repeat pr-10'

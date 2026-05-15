@@ -389,98 +389,98 @@ def main():
 
     # Open DBs
     labels_conn = sqlite3.connect(str(LABELS_DB_PATH), timeout=30)
-    labels_conn.execute("PRAGMA journal_mode=WAL")
-    labels_conn.execute("PRAGMA busy_timeout=30000")
-    init_vision_scores_table(labels_conn)
-
-    crawler_conn = sqlite3.connect(str(DB_PATH), timeout=10)
-    crawler_conn.row_factory = sqlite3.Row
-
-    # Load requested models
-    eva02_result = None
-    siglip2_result = None
-    explicit_path = Path(args.model_path) if args.model_path else None
-
-    if args.model in ("eva02", "all"):
-        eva02_result = load_eva02_model(explicit_path if args.model == "eva02" else None)
-    if args.model in ("siglip2", "all"):
-        siglip2_result = load_siglip2_model(explicit_path if args.model == "siglip2" else None)
-
-    if not eva02_result and not siglip2_result:
-        logger.error("No models could be loaded, exiting.")
-        sys.exit(1)
-
-    # Get all images from crawler (skip videos/archives)
-    rows = crawler_conn.execute("SELECT id, file_path FROM images WHERE file_path IS NOT NULL").fetchall()
-
-    all_images = []
-    for r in rows:
-        ext = Path(r["file_path"]).suffix.lower()
-        if ext in VIDEO_EXTS or ext in SKIP_EXTS:
-            continue
-        full_path = CRAWLER_DIR / r["file_path"]
-        if full_path.exists():
-            all_images.append((r["id"], full_path))
-
-    logger.info("Total scorable images: %d", len(all_images))
-
-    # Score with each model
-    if eva02_result and not _shutdown:
-        model, transform, device, model_name = eva02_result
-        scored_ids = set(
-            r[0]
-            for r in labels_conn.execute(
-                "SELECT image_id FROM vision_scores WHERE model_name = ?", (model_name,)
-            ).fetchall()
-        )
-        to_score = [(img_id, path) for img_id, path in all_images if img_id not in scored_ids]
-        logger.info("[eva02] Already scored: %d, to score: %d", len(scored_ids), len(to_score))
-        if to_score:
-            score_with_eva02(model, transform, device, to_score, labels_conn, model_name)
-        # Free memory
-        del model, transform
-        try:
-            import torch
-
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except Exception:
-            pass
-
-    if siglip2_result and not _shutdown:
-        model, processor, device, model_name = siglip2_result
-        scored_ids = set(
-            r[0]
-            for r in labels_conn.execute(
-                "SELECT image_id FROM vision_scores WHERE model_name = ?", (model_name,)
-            ).fetchall()
-        )
-        to_score = [(img_id, path) for img_id, path in all_images if img_id not in scored_ids]
-        logger.info("[siglip2] Already scored: %d, to score: %d", len(scored_ids), len(to_score))
-        if to_score:
-            score_with_siglip2(model, processor, device, to_score, labels_conn, model_name)
-        # Free memory
-        del model, processor
-        try:
-            import torch
-
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except Exception:
-            pass
-
-    # Final GPU cleanup
     try:
-        import torch
+        labels_conn.execute("PRAGMA journal_mode=WAL")
+        labels_conn.execute("PRAGMA busy_timeout=30000")
+        init_vision_scores_table(labels_conn)
 
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            logger.info("[cleanup] GPU memory released")
-    except Exception:
-        pass
+        crawler_conn = sqlite3.connect(str(DB_PATH), timeout=10)
+        crawler_conn.row_factory = sqlite3.Row
+        try:
+            # Load requested models
+            eva02_result = None
+            siglip2_result = None
+            explicit_path = Path(args.model_path) if args.model_path else None
 
-    crawler_conn.close()
-    labels_conn.close()
+            if args.model in ("eva02", "all"):
+                eva02_result = load_eva02_model(explicit_path if args.model == "eva02" else None)
+            if args.model in ("siglip2", "all"):
+                siglip2_result = load_siglip2_model(explicit_path if args.model == "siglip2" else None)
+
+            if not eva02_result and not siglip2_result:
+                logger.error("No models could be loaded, exiting.")
+                sys.exit(1)
+
+            # Get all images from crawler (skip videos/archives)
+            rows = crawler_conn.execute("SELECT id, file_path FROM images WHERE file_path IS NOT NULL").fetchall()
+
+            all_images = []
+            for r in rows:
+                ext = Path(r["file_path"]).suffix.lower()
+                if ext in VIDEO_EXTS or ext in SKIP_EXTS:
+                    continue
+                full_path = CRAWLER_DIR / r["file_path"]
+                if full_path.exists():
+                    all_images.append((r["id"], full_path))
+
+            logger.info("Total scorable images: %d", len(all_images))
+
+            # Score with each model
+            if eva02_result and not _shutdown:
+                model, transform, device, model_name = eva02_result
+                scored_ids = set(
+                    r[0]
+                    for r in labels_conn.execute(
+                        "SELECT image_id FROM vision_scores WHERE model_name = ?", (model_name,)
+                    ).fetchall()
+                )
+                to_score = [(img_id, path) for img_id, path in all_images if img_id not in scored_ids]
+                logger.info("[eva02] Already scored: %d, to score: %d", len(scored_ids), len(to_score))
+                if to_score:
+                    score_with_eva02(model, transform, device, to_score, labels_conn, model_name)
+                del model, transform
+                try:
+                    import torch
+
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                except Exception:
+                    pass
+
+            if siglip2_result and not _shutdown:
+                model, processor, device, model_name = siglip2_result
+                scored_ids = set(
+                    r[0]
+                    for r in labels_conn.execute(
+                        "SELECT image_id FROM vision_scores WHERE model_name = ?", (model_name,)
+                    ).fetchall()
+                )
+                to_score = [(img_id, path) for img_id, path in all_images if img_id not in scored_ids]
+                logger.info("[siglip2] Already scored: %d, to score: %d", len(scored_ids), len(to_score))
+                if to_score:
+                    score_with_siglip2(model, processor, device, to_score, labels_conn, model_name)
+                del model, processor
+                try:
+                    import torch
+
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                except Exception:
+                    pass
+
+            # Final GPU cleanup
+            try:
+                import torch
+
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    logger.info("[cleanup] GPU memory released")
+            except Exception:
+                pass
+        finally:
+            crawler_conn.close()
+    finally:
+        labels_conn.close()
     logger.info("All done.")
 
 

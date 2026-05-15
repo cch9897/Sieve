@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import sys as _sys
 from pathlib import Path
@@ -21,7 +22,36 @@ from models import (
 )
 from subprocess_manager import make_header
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
+
+
+def _build_subprocess_env(extra: dict[str, str] | None = None) -> dict[str, str]:
+    """Return an env dict for ManagedSubprocess: base os.environ + GPU config + caller extras."""
+    env = os.environ.copy()
+    env.update(
+        {
+            "OMP_NUM_THREADS": "6",
+            "MKL_NUM_THREADS": "6",
+            "TORCH_NUM_THREADS": "6",
+            "OPENBLAS_NUM_THREADS": "6",
+        }
+    )
+    gpu_cfg = _load_gpu_config()
+    inf_mode = gpu_cfg.get("inference_mode", "cpu")
+    env["INFERENCE_MODE"] = inf_mode
+    if inf_mode == "remote" and gpu_cfg.get("url"):
+        env["GPU_INFERENCE_URL"] = gpu_cfg["url"]
+        env["GPU_BATCH_SIZE"] = str(gpu_cfg["batch_size"])
+    else:
+        env.pop("GPU_INFERENCE_URL", None)
+        env.pop("GPU_BATCH_SIZE", None)
+    if inf_mode == "local_gpu":
+        env["CUDA_VISIBLE_DEVICES"] = "0"
+    if extra:
+        env.update(extra)
+    return env
 
 
 # ---------------------------------------------------------------------------
@@ -41,8 +71,8 @@ async def gpu_config_get():
                 resp = await client.get(f"{cfg['url']}/health")
                 if resp.status_code == 200:
                     health = resp.json()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Failed to read GPU config: %s", e)
     return {**cfg, "remote_health": health}
 
 
@@ -152,6 +182,7 @@ async def gpu_test():
                 return {"ok": True, "health": resp.json()}
             return {"ok": False, "error": f"HTTP {resp.status_code}"}
     except Exception as e:
+        logger.exception("GPU server health probe failed")
         return {"ok": False, "error": str(e)}
 
 
@@ -188,18 +219,10 @@ async def prefetch_start(
     if await asyncio.to_thread(mgr.is_running):
         return {"running": True, "message": "已在运行"}
 
-    _prefetch_env = os.environ.copy()
-    _prefetch_env.update(
-        {
-            "OMP_NUM_THREADS": "6",
-            "MKL_NUM_THREADS": "6",
-            "TORCH_NUM_THREADS": "6",
-            "OPENBLAS_NUM_THREADS": "6",
-        }
-    )
+    extras: dict[str, str] = {}
     _proxy = os.environ.get("PREFETCH_PROXY", "")
     if _proxy:
-        _prefetch_env.update(
+        extras.update(
             {
                 "https_proxy": _proxy,
                 "http_proxy": _proxy,
@@ -209,24 +232,12 @@ async def prefetch_start(
                 "NO_PROXY": os.environ.get("PREFETCH_NO_PROXY", "localhost,127.0.0.1"),
             }
         )
-    # Pass GPU/inference config as env vars
-    gpu_cfg = _load_gpu_config()
-    inf_mode = gpu_cfg.get("inference_mode", "cpu")
-    _prefetch_env["INFERENCE_MODE"] = inf_mode
-    if inf_mode == "remote" and gpu_cfg.get("url"):
-        _prefetch_env["GPU_INFERENCE_URL"] = gpu_cfg["url"]
-        _prefetch_env["GPU_BATCH_SIZE"] = str(gpu_cfg["batch_size"])
-    else:
-        _prefetch_env.pop("GPU_INFERENCE_URL", None)
-        _prefetch_env.pop("GPU_BATCH_SIZE", None)
-    if inf_mode == "local_gpu":
-        _prefetch_env["CUDA_VISIBLE_DEVICES"] = "0"
-    # Pass active vision model path
     model_key = model or state._active_model
     if model_key and model_key in state._models:
         source_file = state._models[model_key].get("source_file", "")
         if source_file:
-            _prefetch_env["CNN_MODEL_PATH"] = str(PROJECT_ROOT / "classifier" / source_file)
+            extras["CNN_MODEL_PATH"] = str(PROJECT_ROOT / "classifier" / source_file)
+    _prefetch_env = _build_subprocess_env(extras)
     cmd = [
         "taskset",
         "-c",
@@ -267,6 +278,7 @@ async def prefetch_start(
             return {"running": False, "message": f"启动失败 (exit code {code})"}
         return {"running": False, "message": f"启动失败: {detail}"}
     except Exception as e:
+        logger.exception("Prefetch subprocess start failed")
         return {"running": False, "message": f"启动失败: {e}"}
     return {"running": True, "message": "已启动"}
 
@@ -291,34 +303,13 @@ async def candidates_rescore_start():
     if await asyncio.to_thread(mgr.is_running):
         return {"status": "already_running"}
 
-    _rescore_env = os.environ.copy()
-    # Pass active model
+    extras: dict[str, str] = {}
     model_key = state._active_model
     if model_key and model_key in state._models:
         source_file = state._models[model_key].get("source_file", "")
         if source_file:
-            _rescore_env["CNN_MODEL_PATH"] = str(PROJECT_ROOT / "classifier" / source_file)
-    # Pass GPU config
-    gpu_cfg = _load_gpu_config()
-    inf_mode = gpu_cfg.get("inference_mode", "cpu")
-    _rescore_env["INFERENCE_MODE"] = inf_mode
-    if inf_mode == "remote" and gpu_cfg.get("url"):
-        _rescore_env["GPU_INFERENCE_URL"] = gpu_cfg["url"]
-        _rescore_env["GPU_BATCH_SIZE"] = str(gpu_cfg["batch_size"])
-    else:
-        _rescore_env.pop("GPU_INFERENCE_URL", None)
-        _rescore_env.pop("GPU_BATCH_SIZE", None)
-    if inf_mode == "local_gpu":
-        _rescore_env["CUDA_VISIBLE_DEVICES"] = "0"
-
-    _rescore_env.update(
-        {
-            "OMP_NUM_THREADS": "6",
-            "MKL_NUM_THREADS": "6",
-            "TORCH_NUM_THREADS": "6",
-            "OPENBLAS_NUM_THREADS": "6",
-        }
-    )
+            extras["CNN_MODEL_PATH"] = str(PROJECT_ROOT / "classifier" / source_file)
+    _rescore_env = _build_subprocess_env(extras)
 
     cmd = [
         str(Path(__file__).parent.parent / "venv" / "bin" / "python"),
@@ -340,6 +331,7 @@ async def candidates_rescore_start():
             return {"status": "already_running"}
         return {"status": "failed", "error": detail}
     except Exception as e:
+        logger.exception("Candidates rescore subprocess start failed")
         return {"status": "failed", "error": str(e)}
     return {"status": "started", "model": model_key}
 
@@ -438,6 +430,7 @@ async def ml_retrain_start():
             return {"status": "already_running"}
         return {"status": "failed", "error": detail}
     except Exception as e:
+        logger.exception("XGBoost retrain subprocess start failed")
         return {"status": "failed", "error": str(e)}
     return {"status": "started"}
 
@@ -484,6 +477,7 @@ async def ml_pack_start(max_size: int = Query(1024, ge=0, le=4096)):
             return {"status": "already_running"}
         return {"status": "failed", "error": detail}
     except Exception as e:
+        logger.exception("Pack dataset subprocess start failed")
         return {"status": "failed", "error": str(e)}
     return {"status": "started"}
 
@@ -544,6 +538,7 @@ async def ml_vscore_start(req: VscoreStartRequest = VscoreStartRequest()):
             return {"status": "already_running"}
         return {"status": "failed", "error": detail}
     except Exception as e:
+        logger.exception("Vision scoring subprocess start failed")
         return {"status": "failed", "error": str(e)}
     return {"status": "started", "model": model_key}
 
@@ -586,6 +581,7 @@ async def ml_tag_train_start():
             return {"status": "already_running"}
         return {"status": "failed", "error": detail}
     except Exception as e:
+        logger.exception("Tag train subprocess start failed")
         return {"status": "failed", "error": str(e)}
     return {"status": "started"}
 

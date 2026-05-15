@@ -28,6 +28,10 @@ def build_tag_features(tags_str, rating, model_data):
         x[n_tags + rating_map[rating_name]] = 1.0
 
     x[n_tags + 4] = len(raw_tags)
+    # max_confidence: Danbooru tags are human-curated (not ML-generated), so each
+    # tag is effectively confidence 1.0. This differs from training where
+    # WD14-generated tags have actual confidence values (0..1).
+    # Setting 1.0 here matches the semantics of binary human tags.
     x[n_tags + 5] = 1.0
     return x
 

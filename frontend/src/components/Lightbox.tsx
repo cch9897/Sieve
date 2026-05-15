@@ -3,6 +3,7 @@ import type { ImageItem } from '../types'
 import { getSourceMeta } from '../sourceMeta'
 import { fetchAutoTags, fetchVisionScoreCompare } from '../api'
 import type { AutoTagsDetail, VisionScoreCompare } from '../api'
+import { useFocusTrap } from '../hooks/useFocusTrap'
 
 const RATING_COLORS: Record<string, string> = {
   general: 'border-emerald-500/30 bg-emerald-500/12 text-emerald-200',
@@ -46,6 +47,7 @@ function renderScoreBar(score: number): ReactNode {
 const MAX_CACHE = 50
 
 export default function Lightbox({ image, images, onClose, onNavigate }: LightboxProps) {
+  const focusTrapRef = useFocusTrap(!!image)
   const currentIndex = useMemo(
     () => image ? images.findIndex(i => i.id === image.id) : -1,
     [images, image?.id]
@@ -59,11 +61,16 @@ export default function Lightbox({ image, images, onClose, onNavigate }: Lightbo
     if (currentIndex > 0) onNavigate(images[currentIndex - 1])
   }, [currentIndex, images, onNavigate])
 
+  const [zoomed, setZoomed] = useState(false)
+  const zoomedRef = useRef(zoomed)
+  zoomedRef.current = zoomed
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
-    if (e.key === 'Escape') onClose()
-    else if (e.key === 'ArrowRight') goNext()
-    else if (e.key === 'ArrowLeft') goPrev()
-  }, [onClose, goNext, goPrev])
+    const isZoomed = zoomedRef.current
+    if (e.key === 'Escape') { if (isZoomed) { setZoomed(false); return } onClose() }
+    else if (e.key === 'ArrowRight' && !isZoomed) goNext()
+    else if (e.key === 'ArrowLeft' && !isZoomed) goPrev()
+    else if ((e.key === 'z' || e.key === 'Z') && !image?.is_video) { e.preventDefault(); setZoomed(z => !z) }
+  }, [onClose, goNext, goPrev, image?.is_video])
 
   useEffect(() => {
     if (image) {
@@ -90,7 +97,6 @@ export default function Lightbox({ image, images, onClose, onNavigate }: Lightbo
   const [autoTags, setAutoTags] = useState<AutoTagsDetail | null>(null)
   const [tagsLoading, setTagsLoading] = useState(false)
   const [multiScores, setMultiScores] = useState<VisionScoreCompare | null>(null)
-
   const autoTagsCache = useRef<Map<number, AutoTagsDetail>>(new Map())
   const visionScoreCache = useRef<Map<number, VisionScoreCompare>>(new Map())
   const abortRef = useRef<AbortController | null>(null)
@@ -177,6 +183,7 @@ export default function Lightbox({ image, images, onClose, onNavigate }: Lightbo
 
   return (
     <div
+      ref={focusTrapRef}
       className="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(4,3,2,0.94)] p-3 md:p-6"
       role="dialog"
       aria-modal="true"
@@ -192,14 +199,34 @@ export default function Lightbox({ image, images, onClose, onNavigate }: Lightbo
       {hasPrev && <button onClick={e => { e.stopPropagation(); goPrev() }} aria-label="上一张" className="absolute left-3 top-1/2 z-10 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full border border-[var(--line)] bg-[rgba(19,15,12,0.78)] text-[var(--text)] transition-colors hover:bg-[rgba(40,32,24,0.92)]"><svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M12 4l-6 6 6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg></button>}
       {hasNext && <button onClick={e => { e.stopPropagation(); goNext() }} aria-label="下一张" className="absolute right-3 top-1/2 z-10 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full border border-[var(--line)] bg-[rgba(19,15,12,0.78)] text-[var(--text)] transition-colors hover:bg-[rgba(40,32,24,0.92)]"><svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M8 4l6 6-6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg></button>}
 
-      <div className="relative z-10 grid max-h-[calc(100vh-2rem)] w-full max-w-7xl gap-4 lg:grid-cols-[minmax(0,1.3fr)_380px]" onClick={e => e.stopPropagation()}>
+      <div className="relative z-10 grid max-h-[calc(100vh-2rem)] w-full max-w-7xl gap-4 lg:grid-cols-[minmax(0,1.3fr)_380px] max-md:grid-rows-[1fr_auto]" onClick={e => e.stopPropagation()}>
         <section className="editorial-panel overflow-hidden rounded-[30px] p-3 md:p-4">
-          <div className="relative flex min-h-[40vh] items-center justify-center overflow-hidden rounded-[24px] bg-[rgba(255,255,255,0.03)]">
-            {image.is_video ? <video src={`/images/${image.file_path}`} controls autoPlay className="max-h-[78vh] max-w-full rounded-[20px]" /> : <img src={`/images/${image.file_path}`} alt={image.source_id} className="max-h-[78vh] max-w-full rounded-[20px] object-contain" />}
+          <div className={`relative flex min-h-[40vh] items-center justify-center rounded-[24px] bg-[rgba(255,255,255,0.03)] ${zoomed ? 'overflow-auto' : 'overflow-hidden'}`}
+            onClick={e => {
+              e.stopPropagation()
+              if (!image.is_video) setZoomed(z => !z)
+            }}
+          >
+            {image.is_video ? (
+              <video src={`/images/${image.file_path}`} controls autoPlay className="max-h-[78vh] max-w-full rounded-[20px]" />
+            ) : (
+              <img
+                src={`/images/${image.file_path}`}
+                alt={image.source_id}
+                className={`rounded-[20px] cursor-zoom-in transition-transform duration-200 ${zoomed ? 'max-h-none max-w-none object-none cursor-zoom-out' : 'max-h-[55vh] md:max-h-[78vh] max-w-full object-contain'}`}
+              />
+            )}
+            {!image.is_video && !zoomed && (
+              <div className="absolute bottom-3 right-3 rounded-full border border-white/10 bg-[rgba(19,15,12,0.72)] px-2.5 py-1 text-[10px] text-white/58 backdrop-blur-sm pointer-events-none">
+                点击放大 · 按 Z 切换
+              </div>
+            )}
           </div>
         </section>
 
-        <aside className="editorial-panel flex max-h-[calc(100vh-2rem)] flex-col overflow-hidden rounded-[30px]">
+        {/* Mobile metadata: collapsible bottom panel on md- screens */}
+        <aside className="editorial-panel flex flex-col overflow-hidden rounded-[30px] max-md:max-h-[38vh] max-md:overflow-y-auto lg:max-h-[calc(100vh-2rem)]">
+
           <div className="border-b border-[var(--line)] px-5 py-4">
             <div className="micro-label">Archive Entry</div>
             <div className="mt-2 flex items-start gap-3">
@@ -241,7 +268,13 @@ export default function Lightbox({ image, images, onClose, onNavigate }: Lightbo
             <section>
               <div className="text-[11px] uppercase tracking-[0.22em] text-[var(--muted)]">自动标签</div>
               <div className="mt-2 rounded-[20px] border border-[var(--line)] bg-[rgba(255,255,255,0.03)] px-4 py-3">
-                {tagsLoading ? <div className="text-xs text-[var(--muted)] animate-pulse">加载中…</div> : autoTags && autoTags.found ? <div className="space-y-3">{autoTags.rating && <div className="flex flex-wrap gap-1.5">{Object.entries(autoTags.rating).sort(([, a], [, b]) => b - a).slice(0, 1).map(([rating]) => <span key={rating} className={`rounded-full border px-2.5 py-1 text-[11px] font-medium ${RATING_COLORS[rating] || 'border-white/10 bg-white/5 text-white/70'}`}>{rating}</span>)}</div>}{autoTags.characters && Object.keys(autoTags.characters).length > 0 && <div className="flex flex-wrap gap-1.5">{Object.entries(autoTags.characters).sort(([, a], [, b]) => b - a).map(([tag, score]) => <span key={tag} className="rounded-full border border-[var(--line)] bg-[rgba(159,91,82,0.14)] px-2.5 py-1 text-[11px] text-[var(--text)]">{tag}<span className="ml-1 text-[var(--muted)]">{(score * 100).toFixed(0)}%</span></span>)}</div>}{autoTags.general && Object.keys(autoTags.general).length > 0 && <div className="flex flex-wrap gap-1.5">{Object.entries(autoTags.general).sort(([, a], [, b]) => b - a).map(([tag, score]) => <span key={tag} className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-white/76">{tag}<span className="ml-1 text-white/40">{(score * 100).toFixed(0)}%</span></span>)}</div>}</div> : <div className="text-xs text-[var(--muted)]">暂未打标</div>}
+                {tagsLoading ? (
+                  <div className="flex flex-wrap gap-1.5">
+                    {[60, 48, 72, 40, 56].map((w, i) => (
+                      <div key={i} className="h-5 animate-pulse rounded-full bg-white/10" style={{ width: `${w}px` }} />
+                    ))}
+                  </div>
+                ) : autoTags && autoTags.found ? <div className="space-y-3">{autoTags.rating && <div className="flex flex-wrap gap-1.5">{Object.entries(autoTags.rating).sort(([, a], [, b]) => b - a).slice(0, 1).map(([rating]) => <span key={rating} className={`rounded-full border px-2.5 py-1 text-[11px] font-medium ${RATING_COLORS[rating] || 'border-white/10 bg-white/5 text-white/70'}`}>{rating}</span>)}</div>}{autoTags.characters && Object.keys(autoTags.characters).length > 0 && <div className="flex flex-wrap gap-1.5">{Object.entries(autoTags.characters).sort(([, a], [, b]) => b - a).map(([tag, score]) => <span key={tag} className="rounded-full border border-[var(--line)] bg-[rgba(159,91,82,0.14)] px-2.5 py-1 text-[11px] text-[var(--text)]">{tag}<span className="ml-1 text-[var(--muted)]">{(score * 100).toFixed(0)}%</span></span>)}</div>}{autoTags.general && Object.keys(autoTags.general).length > 0 && <div className="flex flex-wrap gap-1.5">{Object.entries(autoTags.general).sort(([, a], [, b]) => b - a).map(([tag, score]) => <span key={tag} className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-white/76">{tag}<span className="ml-1 text-white/40">{(score * 100).toFixed(0)}%</span></span>)}</div>}</div> : <div className="text-xs text-[var(--muted)]">暂未打标</div>}
               </div>
             </section>
           </div>

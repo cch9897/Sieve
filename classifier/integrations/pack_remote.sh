@@ -125,7 +125,7 @@ cat > "$LOCAL_WORK/_remote_pack.py" <<'REMOTEPY'
 import csv, json, os, shutil, sqlite3, subprocess
 from PIL import Image
 
-WORK = os.environ.get("WORK_DIR", "/home/cch-claw/_tmp_pack_work")
+WORK = os.environ.get("WORK_DIR", "/tmp/_tmp_pack_work")
 TAR_INDEX_DB = os.environ.get("TAR_INDEX_DB", "")
 MAX_SIZE = 512
 OUT = os.path.join(WORK, "preference_train")

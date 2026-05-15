@@ -9,7 +9,7 @@ export async function fetchImages(params: {
   page?: number
   per_page?: number
 }, signal?: AbortSignal): Promise<ImageListResponse> {
-  const qs = buildQuery(params as Record<string, string | number | undefined>)
+  const qs = buildQuery(params)
   return apiFetch(`${BASE}/api/images?${qs}`, signal)
 }
 
@@ -21,7 +21,7 @@ export async function fetchLiked(params: {
   page?: number
   per_page?: number
 }, signal?: AbortSignal): Promise<ImageListResponse> {
-  const qs = buildQuery(params as Record<string, string | number | undefined>)
+  const qs = buildQuery(params)
   return apiFetch(`${BASE}/api/liked?${qs}`, signal)
 }
 
@@ -31,7 +31,7 @@ export async function fetchRandomLiked(params: {
   media?: string
   count?: number
 }, signal?: AbortSignal): Promise<ImageListResponse> {
-  const qs = buildQuery(params as Record<string, string | number | undefined>)
+  const qs = buildQuery(params)
   return apiFetch(`${BASE}/api/liked/random?${qs}`, signal)
 }
 

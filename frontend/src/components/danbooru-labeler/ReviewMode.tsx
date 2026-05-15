@@ -32,6 +32,7 @@ export default function ReviewMode() {
   const [lastAction, setLastAction] = useState<{ imageId: number; verdict: string } | null>(null)
   const [slideDir, setSlideDir] = useState<'left' | 'right' | 'up' | ''>('')
   const [source, setSource] = useState<'random' | 'ai'>('random')
+  const [candidateError, setCandidateError] = useState<string | null>(null)
   const tagInputRef = useRef<HTMLInputElement>(null)
 
   const loadNext = useCallback(async () => {
@@ -82,7 +83,10 @@ export default function ReviewMode() {
         danbooru_tags: image.tags,
       })
       if (source === 'ai') {
-        await markDanbooruCandidate(image.id).catch(() => {})
+        await markDanbooruCandidate(image.id).catch(err => {
+          console.error('markDanbooruCandidate failed:', err)
+          setCandidateError('AI candidate mark failed, but label was saved.')
+        })
       }
       await new Promise(r => setTimeout(r, 300))
       await loadNext()
@@ -276,6 +280,12 @@ export default function ReviewMode() {
         </div>
       </div>
 
+      {candidateError && (
+        <div className="w-full max-w-2xl rounded-ed-md border border-[var(--warning)]/30 bg-[var(--warning-soft)] px-4 py-2 text-sm text-[var(--warning)]">
+          {candidateError}
+        </div>
+      )}
+
       <div
         className={[
           'relative w-full max-w-2xl overflow-hidden rounded-ed-xl border border-[var(--line)] bg-[var(--panel)] editorial-panel transition-transform-opacity duration-300',
@@ -299,10 +309,10 @@ export default function ReviewMode() {
             <img
               key={image.id}
               src={image.preview_url}
-              alt=""
+              alt={'Danbooru #' + image.id}
               className="max-h-[65vh] max-w-full rounded-ed-md object-contain"
               loading="eager"
-              onError={async () => { if (source === 'ai' && image) { await markDanbooruCandidate(image.id).catch(() => {}); loadNext() } }}
+              onError={async () => { if (source === 'ai' && image) { await markDanbooruCandidate(image.id).catch(err => { console.error('markDanbooruCandidate on error failed:', err) }); loadNext() } }}
             />
           )}
         </div>

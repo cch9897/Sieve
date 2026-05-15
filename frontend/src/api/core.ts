@@ -9,10 +9,13 @@ export class ApiError extends Error {
   }
 }
 
-export function buildQuery(params: Record<string, string | number | undefined>): string {
+export type QueryParams = Record<string, string | number | null | undefined>
+
+export function buildQuery(params: QueryParams | undefined): string {
   const sp = new URLSearchParams()
+  if (!params) return ''
   for (const [key, val] of Object.entries(params)) {
-    if (val !== undefined && val !== '') {
+    if (val !== undefined && val !== null && val !== '') {
       sp.set(key, String(val))
     }
   }

@@ -7,6 +7,7 @@ const SHORTCUTS = [
   { key: 'F', desc: '展开/收起筛选' },
   { key: 'J / K', desc: '下一页 / 上一页（分页模式）' },
   { key: '← / →', desc: '灯箱上一张 / 下一张' },
+  { key: 'Z', desc: '灯箱内缩放图片' },
   { key: 'Esc', desc: '关闭灯箱或返回' },
   { key: '?', desc: '打开快捷键帮助' },
 ]
@@ -15,9 +16,9 @@ export default function KeyboardShortcuts() {
   const [open, setOpen] = useState(false)
 
   useEffect(() => {
-    const onOpen = () => setOpen(true)
-    window.addEventListener('booru-shortcuts-open', onOpen as EventListener)
-    return () => window.removeEventListener('booru-shortcuts-open', onOpen as EventListener)
+    const onOpen = (_e: Event) => { setOpen(true) }
+    window.addEventListener('booru-shortcuts-open', onOpen)
+    return () => window.removeEventListener('booru-shortcuts-open', onOpen)
   }, [])
 
   return (

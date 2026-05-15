@@ -8,6 +8,7 @@ interface ImageGridProps {
   images: ImageItem[]
   onImageClick: (img: ImageItem) => void
   loading?: boolean
+  onClearFilters?: () => void
 }
 
 const LazyImage = memo(function LazyImage({ src }: { src: string }) {
@@ -31,7 +32,28 @@ const LazyImage = memo(function LazyImage({ src }: { src: string }) {
 })
 
 function SkeletonGrid() {
-  const heights = [220, 300, 240, 340, 260, 280, 200, 320, 260, 240, 300, 230]
+  // Weighted toward common art aspect ratios
+  const ratios = [
+    { w: 3, h: 4, weight: 3 },  // portrait
+    { w: 2, h: 3, weight: 3 },  // portrait
+    { w: 9, h: 16, weight: 2 }, // tall portrait
+    { w: 1, h: 1, weight: 2 },  // square
+    { w: 4, h: 3, weight: 2 },  // landscape
+    { w: 16, h: 9, weight: 2 }, // wide landscape
+    { w: 3, h: 2, weight: 1 },  // wide
+  ]
+  const totalWeight = ratios.reduce((s, r) => s + r.weight, 0)
+  const width = 260
+  function pickHeight(_: unknown, index: number): number {
+    const seed = (index * 7 + 13) % totalWeight
+    let r = seed
+    for (const ratio of ratios) {
+      r -= ratio.weight
+      if (r <= 0) return Math.round((width * ratio.h) / ratio.w)
+    }
+    return 320
+  }
+  const heights = Array.from({ length: 12 }, pickHeight)
   return (
     <div className="masonry px-3 md:px-0">
       {heights.map((h, i) => (
@@ -62,7 +84,7 @@ const ImageCard = memo(function ImageCard({ img, batchTag, onImageClick }: {
       onClick={() => onImageClick(img)}
       onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onImageClick(img) } }}
     >
-      <article className="editorial-panel overflow-hidden rounded-[28px] transition-all duration-300 hover:-translate-y-1 hover:border-[var(--line-strong)] hover:shadow-[0_36px_90px_rgba(0,0,0,0.34)]">
+      <article className="editorial-panel overflow-hidden rounded-[28px] transition-all duration-300 hover:-translate-y-1 hover:border-[var(--line-strong)] hover:shadow-[0_36px_90px_rgba(0,0,0,0.34)] active:scale-[0.98] active:duration-75">
         <div className="relative">
           {img.is_video ? (
             <video
@@ -120,18 +142,20 @@ const ImageCard = memo(function ImageCard({ img, batchTag, onImageClick }: {
                 {img.subfolder && <span className="truncate">{img.subfolder}</span>}
               </div>
 
-              {topTags.length > 0 && (
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  {topTags.map(tag => (
-                    <span
-                      key={tag}
-                      className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] text-white/62"
-                    >
-                      {tag}
-                    </span>
-                  ))}
-                </div>
-              )}
+              {/* Reserve min-height for tags to prevent layout shift when they load async */}
+              <div className="mt-2 min-h-[24px] flex flex-wrap gap-1.5">
+                {topTags.length > 0 ? topTags.map(tag => (
+                  <span
+                    key={tag}
+                    className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] text-white/62"
+                  >
+                    {tag}
+                  </span>
+                )) : (
+                  /* Invisible placeholder to hold height */
+                  <span className="rounded-full border border-transparent px-2 py-0.5 text-[10px] invisible" aria-hidden="true">placeholder</span>
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -142,7 +166,7 @@ const ImageCard = memo(function ImageCard({ img, batchTag, onImageClick }: {
 
 const MAX_BATCH_TAGS = 300
 
-const ImageGrid = React.memo(function ImageGrid({ images, onImageClick, loading }: ImageGridProps) {
+const ImageGrid = React.memo(function ImageGrid({ images, onImageClick, loading, onClearFilters }: ImageGridProps) {
   const [batchTags, setBatchTags] = useState<Record<string, { top_tags: string; rating: string }>>({})
   const fetchedIdsRef = useRef<Set<number>>(new Set())
 
@@ -182,6 +206,14 @@ const ImageGrid = React.memo(function ImageGrid({ images, onImageClick, loading 
         <EmptyState
           title="这里暂时是空的"
           description="换个来源、日期或者排序试试，也可能只是这一天还没抓到图。"
+          action={onClearFilters ? (
+            <button
+              onClick={onClearFilters}
+              className="rounded-2xl border border-[var(--line-strong)] bg-[var(--accent-soft)] px-4 py-2 text-sm text-[var(--text)] transition hover:bg-[rgba(214,165,93,0.2)]"
+            >
+              重置筛选
+            </button>
+          ) : undefined}
         />
       </div>
     )

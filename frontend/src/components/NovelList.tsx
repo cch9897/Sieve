@@ -4,6 +4,7 @@ import Pagination from './Pagination'
 import type { NovelItem } from '../types'
 import EmptyState from './EmptyState'
 import { formatNum } from '../utils'
+import FilterChip from './FilterChip'
 
 interface NovelListProps {
   onNovelSelect: (novel: NovelItem) => void
@@ -35,10 +36,12 @@ export default function NovelList({
     fetchNovelDates().then(r => setDates(r.dates))
   }, [])
 
-  // Report state changes to parent for persistence
+  const onStateChangeRef = useRef(onStateChange)
+  onStateChangeRef.current = onStateChange
+
   useEffect(() => {
-    onStateChange?.({ search, date: selectedDate, sort, page })
-  }, [search, selectedDate, sort, page, onStateChange])
+    onStateChangeRef.current?.({ search, date: selectedDate, sort, page })
+  }, [search, selectedDate, sort, page])
 
   const loadNovels = useCallback(async () => {
     setLoading(true)
@@ -95,23 +98,8 @@ export default function NovelList({
 
           <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--muted)]">
             <span className="rounded-full border border-[var(--line)] bg-[var(--panel-strong)] px-2.5 py-1">共 {total} 篇</span>
-            {search && (
-              <button
-                onClick={clearSearch}
-                aria-label="清除搜索"
-                className="inline-flex items-center gap-1 rounded-full border border-[var(--line)] bg-[var(--panel-strong)] px-2.5 py-1 transition-colors hover:border-[var(--line-strong)] hover:text-[var(--text)]/80"
-              >
-                搜索：{search} ✕
-              </button>
-            )}
-            {selectedDate && (
-              <button
-                onClick={() => { setSelectedDate(''); setPage(1) }}
-                className="inline-flex items-center gap-1 rounded-full border border-[var(--line)] bg-[var(--panel-strong)] px-2.5 py-1 transition-colors hover:border-[var(--line-strong)] hover:text-[var(--text)]/80"
-              >
-                {selectedDate} ✕
-              </button>
-            )}
+            {search && <FilterChip label="搜索" value={search} onDismiss={clearSearch} />}
+            {selectedDate && <FilterChip label="日期" value={selectedDate} onDismiss={() => { setSelectedDate(''); setPage(1) }} />}
           </div>
         </div>
 

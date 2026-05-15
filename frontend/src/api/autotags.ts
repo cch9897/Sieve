@@ -47,7 +47,7 @@ export async function searchByAutoTag(params: {
   page?: number
   per_page?: number
 }, signal?: AbortSignal): Promise<AutoTagsSearchResponse> {
-  const qs = buildQuery(params as Record<string, string | number | undefined>)
+  const qs = buildQuery(params)
   return apiFetch(`${BASE}/api/autotags/search?${qs}`, signal)
 }
 

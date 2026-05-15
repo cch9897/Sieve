@@ -42,6 +42,7 @@ export function useGallery(filters: UseGalleryFilters, opts: UseGalleryOptions) 
   const [loading, setLoading] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [errorKind, setErrorKind] = useState<'network' | 'empty' | null>(null)
   const [searchQuery, setSearchQuery] = useState(initialSearchQuery)
 
   const abortRef = useRef<AbortController | null>(null)
@@ -83,6 +84,7 @@ export function useGallery(filters: UseGalleryFilters, opts: UseGalleryOptions) 
       setLoading(true)
     }
     setError(null)
+    setErrorKind(null)
 
     try {
       const data = await fetchImages({
@@ -99,9 +101,13 @@ export function useGallery(filters: UseGalleryFilters, opts: UseGalleryOptions) 
       setTotal(data.total)
       setPages(data.pages)
       setPageByMode(prev => ({ ...prev, [galleryMode]: targetPage }))
+      if (!append && data.images.length === 0 && data.total === 0) {
+        setErrorKind('empty')
+      }
     } catch (e) {
       if (e instanceof DOMException && e.name === 'AbortError') return
       setError('图片加载失败了，刷新一下或者换个筛选再试试。')
+      setErrorKind('network')
     } finally {
       if (!controller.signal.aborted) {
         setLoading(false)
@@ -162,6 +168,7 @@ export function useGallery(filters: UseGalleryFilters, opts: UseGalleryOptions) 
     loading,
     loadingMore,
     error,
+    errorKind,
     currentPage,
     hasMore,
     loadImages,

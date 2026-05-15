@@ -14,6 +14,7 @@ import asyncio
 import os
 import signal
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import IO, Any, Optional
@@ -40,6 +41,10 @@ class ManagedSubprocess:
         self.log_path = log_path
         self.pgrep_pattern = pgrep_pattern
         self.lock: asyncio.Lock = asyncio.Lock()
+        # Guards cross-thread reads/writes of process + log_fh: sync helpers
+        # (is_running, status snapshot) run via asyncio.to_thread on a worker
+        # thread while async start/stop mutate these fields on the loop thread.
+        self._sync_lock: threading.Lock = threading.Lock()
         self.process: Optional[subprocess.Popen] = None
         self.log_fh: Optional[IO[Any]] = None
 
@@ -49,13 +54,15 @@ class ManagedSubprocess:
 
     def is_running(self) -> bool:
         """Return True if our tracked process or any pgrep-matching process is alive."""
-        if self.process is not None:
-            ret = self.process.poll()
-            if ret is None:
-                return True
-            # Tracked process has exited; clear handle + log fh
-            self.process = None
-            self._close_log_fh()
+        with self._sync_lock:
+            proc = self.process
+            if proc is not None:
+                ret = proc.poll()
+                if ret is None:
+                    return True
+                # Tracked process has exited; clear handle + log fh
+                self.process = None
+                self._close_log_fh()
         if self.pgrep_pattern:
             try:
                 result = subprocess.run(
@@ -145,15 +152,17 @@ class ManagedSubprocess:
                     log_fh.close()
                 raise HTTPException(status_code=500, detail=f"spawn_failed:{e}")
 
-            self.process = proc
-            self.log_fh = log_fh
+            with self._sync_lock:
+                self.process = proc
+                self.log_fh = log_fh
 
             if wait_after > 0:
                 await asyncio.sleep(wait_after)
                 if proc.poll() is not None:
                     code = proc.returncode
-                    self.process = None
-                    self._close_log_fh()
+                    with self._sync_lock:
+                        self.process = None
+                        self._close_log_fh()
                     raise HTTPException(status_code=500, detail=f"exited:{code}")
 
             return {"started": True, "pid": proc.pid}
@@ -171,12 +180,14 @@ class ManagedSubprocess:
             return {"stopped": killed}
 
     async def _terminate_tracked(self) -> bool:
-        proc = self.process
+        with self._sync_lock:
+            proc = self.process
         if proc is None or proc.poll() is not None:
             # Already exited but maybe log handle still open
             if proc is not None:
-                self.process = None
-                self._close_log_fh()
+                with self._sync_lock:
+                    self.process = None
+                    self._close_log_fh()
             return False
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
@@ -199,8 +210,9 @@ class ManagedSubprocess:
                         pass
             except Exception:
                 pass
-        self.process = None
-        self._close_log_fh()
+        with self._sync_lock:
+            self.process = None
+            self._close_log_fh()
         return True
 
     def _pgrep_kill(self) -> bool:
@@ -237,8 +249,10 @@ class ManagedSubprocess:
         """
         running = await asyncio.to_thread(self.is_running)
         last_exit_code: Optional[int] = None
-        if not running and self.process is not None:
-            last_exit_code = self.process.poll()
+        with self._sync_lock:
+            proc = self.process
+        if not running and proc is not None:
+            last_exit_code = proc.poll()
         log_tail = await self.read_log_tail() if include_log else ""
         return {
             "running": running,
@@ -248,7 +262,8 @@ class ManagedSubprocess:
 
     async def cleanup(self) -> None:
         """Lifespan-shutdown hook: terminate the process and close the log fh."""
-        proc = self.process
+        with self._sync_lock:
+            proc = self.process
         if proc is not None and proc.poll() is None:
             try:
                 proc.terminate()
@@ -264,8 +279,9 @@ class ManagedSubprocess:
                     proc.kill()
                 except Exception:
                     pass
-        self.process = None
-        self._close_log_fh()
+        with self._sync_lock:
+            self.process = None
+            self._close_log_fh()
 
 
 def make_header(label: str, *, extra: str | None = None) -> str:

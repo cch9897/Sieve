@@ -13,7 +13,7 @@ export async function fetchLabelerNext(params?: {
   source?: string
   media?: string
 }, signal?: AbortSignal): Promise<LabelerNextResponse> {
-  const qs = buildQuery(params as Record<string, string | number | undefined>)
+  const qs = buildQuery(params)
   return apiFetch(`${BASE}/api/labeler/next${qs ? '?' + qs : ''}`, signal)
 }
 
@@ -35,7 +35,7 @@ export async function fetchLabelerHistory(params?: {
   page?: number
   per_page?: number
 }, signal?: AbortSignal): Promise<LabelerHistoryResponse> {
-  const qs = buildQuery(params as Record<string, string | number | undefined>)
+  const qs = buildQuery(params)
   return apiFetch(`${BASE}/api/labeler/history?${qs}`, signal)
 }
 

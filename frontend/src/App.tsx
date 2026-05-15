@@ -21,6 +21,13 @@ const NovelReader = lazy(() => import('./components/NovelReader'))
 const Labeler = lazy(() => import('./components/Labeler'))
 const DanbooruLabeler = lazy(() => import('./components/DanbooruLabeler'))
 
+const HASH_VIEWS: View[] = ['gallery', 'novels', 'labeler', 'danbooru', 'stats']
+
+function parseHashView(hash: string): View | null {
+  const v = hash.replace(/^#/, '') as View
+  return HASH_VIEWS.includes(v) ? v : null
+}
+
 const suspenseFallback = (
   <div className="flex h-64 items-center justify-center">
     <div className="h-8 w-8 animate-spin rounded-full border-2 border-[var(--spinner-base)] border-t-[var(--spinner-accent)]" role="status" aria-label="加载中" />
@@ -37,7 +44,10 @@ export default function App() {
   } = useGalleryFilters(initial)
   const { novelState, handleNovelStateChange } = useNovelFilters(initial)
 
-  const [view, setView] = useState<View>(initial.view)
+  const [view, setView] = useState<View>(() => {
+    if (typeof window === 'undefined') return initial.view
+    return parseHashView(window.location.hash) ?? initial.view
+  })
   const [lightboxImage, setLightboxImage] = useState<ImageItem | null>(null)
   const [selectedNovel, setSelectedNovel] = useState<NovelItem | null>(null)
   const pendingNovelId = initial.selectedNovelId
@@ -50,7 +60,7 @@ export default function App() {
   )
   const {
     images, displayImages, sources, sourceCounts, dates, total, pages,
-    loading, loadingMore, error, currentPage, hasMore,
+    loading, loadingMore, error, errorKind, currentPage, hasMore,
     loadImages, loadMore, resetAndReload, clearListForModeSwitch,
     searchQuery, setSearchQuery,
   } = gallery
@@ -121,7 +131,7 @@ export default function App() {
   }, [currentPage, galleryMode, loadImages, pages, selectedNovel, view])
 
 
-  const handleViewChange = useCallback((v: View) => {
+  const applyView = useCallback((v: View) => {
     if (view === 'gallery') {
       scrollYRef.current = window.scrollY
     }
@@ -139,6 +149,39 @@ export default function App() {
       if (v !== 'gallery') setLightboxImage(null)
     }
   }, [view, scrollYRef])
+
+  const handleViewChange = useCallback((v: View) => {
+    if (v === view) return
+    applyView(v)
+    try { window.history.pushState({ view: v }, '', '#' + v) } catch { /* ignore */ }
+  }, [applyView, view])
+
+  useEffect(() => {
+    try {
+      const hashView = parseHashView(window.location.hash)
+      if (hashView) {
+        window.history.replaceState({ view: hashView }, '', '#' + hashView)
+      } else {
+        window.history.replaceState({ view }, '', '#' + view)
+      }
+    } catch { /* ignore */ }
+  // Run once on mount — we want a one-time URL/state sync.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    const onPopState = (e: PopStateEvent) => {
+      const stateView = (e.state && typeof e.state === 'object' && 'view' in e.state)
+        ? (e.state as { view?: unknown }).view
+        : undefined
+      const next = (typeof stateView === 'string' && HASH_VIEWS.includes(stateView as View))
+        ? (stateView as View)
+        : parseHashView(window.location.hash)
+      if (next && next !== view) applyView(next)
+    }
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [applyView, view])
 
   // Filter change handlers — wrap each to also clear the gallery list and bounce to page 1.
   const handleSourceChangeWrapped = useCallback((s: string) => { handleSourceChange(s); resetAndReload() }, [handleSourceChange, resetAndReload])
@@ -198,17 +241,32 @@ export default function App() {
             onSearchChange={handleSearchChange}
           />
           <main id="main-content" className="mx-auto max-w-[1920px] px-3 py-4 pb-20 md:px-6 md:py-6 md:pb-6">
-            {error ? (
+            {errorKind === 'network' ? (
               <div className="px-4">
                 <EmptyState
-                  title="图片暂时没刷出来"
-                  description={error}
+                  title="出错了，请重试"
+                  description={error ?? undefined}
                   action={(
                     <button
                       onClick={() => loadImages(currentPage || 1)}
                       className="rounded-2xl border border-[var(--line-strong)] bg-[var(--accent-soft)] px-4 py-2 text-sm text-[var(--text)] transition hover:bg-[rgba(214,165,93,0.2)]"
                     >
                       重新加载
+                    </button>
+                  )}
+                />
+              </div>
+            ) : errorKind === 'empty' ? (
+              <div className="px-4">
+                <EmptyState
+                  title="没找到符合条件的图片"
+                  description="试着换一个来源、日期或清空当前筛选条件。"
+                  action={(
+                    <button
+                      onClick={clearAllFilters}
+                      className="rounded-2xl border border-[var(--line-strong)] bg-[var(--accent-soft)] px-4 py-2 text-sm text-[var(--text)] transition hover:bg-[rgba(214,165,93,0.2)]"
+                    >
+                      清空筛选
                     </button>
                   )}
                 />

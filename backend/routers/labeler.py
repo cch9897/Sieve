@@ -4,14 +4,13 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 import state
 from config import CRAWLER_DIR
 from database import get_db, get_labels_db_async
-from export_utils import build_zip_to_temp, stream_and_cleanup
 from services import labeler_service as svc
+from services.export_service import build_export_zip
 from utils import _fetch_all_vision_scores, ttl_cache
 
 VIDEO_EXTS = state.VIDEO_EXTS
@@ -338,10 +337,14 @@ async def export_liked(
 
     def _fetch_bytes(item: tuple) -> tuple[bytes | None, str]:
         _img_id, fp, full_str, _src, _sid = item
+        fallback_ext = Path(fp).suffix.lstrip(".")
+        full_path = Path(full_str)
+        if not state._safe_under_crawler(full_path):
+            return None, fallback_ext
         try:
-            return Path(full_str).read_bytes(), Path(fp).suffix.lstrip(".")
+            return full_path.read_bytes(), fallback_ext
         except OSError:
-            return None, Path(fp).suffix.lstrip(".")
+            return None, fallback_ext
 
     def _arcname(item: tuple, ext: str) -> str:
         _img_id, fp, _full, _src, _sid = item
@@ -361,7 +364,7 @@ async def export_liked(
     tag_suffix = f"_{tag}" if tag else ""
     dl_filename = f"booru_{verdict}{tag_suffix}_{len(file_entries)}imgs.zip"
 
-    tmp_path, dl_filename, _packed, _skipped = await build_zip_to_temp(
+    response, _packed, _skipped = await build_export_zip(
         file_entries,
         max_size=max_size,
         fetch_bytes=_fetch_bytes,
@@ -369,9 +372,4 @@ async def export_liked(
         meta_fn=_meta,
         download_filename=dl_filename,
     )
-
-    return StreamingResponse(
-        stream_and_cleanup(tmp_path),
-        media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{dl_filename}"'},
-    )
+    return response

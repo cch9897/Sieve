@@ -6,16 +6,27 @@ from typing import Optional
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 import state
 from config import CANDIDATES_DB_PATH, DANBOORU_LIKES_DIR
 from database import get_candidates_db, get_danbooru_client, get_danbooru_labels_db
-from export_utils import build_zip_to_temp, stream_and_cleanup
 from services import labeler_service as svc
+from services.export_service import build_export_zip
 
 logger = logging.getLogger(__name__)
+
+_SAFE_EXT_RE = re.compile(r"^[A-Za-z0-9]{1,8}$")
+
+
+def _is_safe_ext(ext: str) -> bool:
+    """Reject anything that could break out of a directory or hold a separator."""
+    if not ext or len(ext) > 8:
+        return False
+    if any(ch in ext for ch in ("/", "\\", ".")) or ".." in ext:
+        return False
+    return bool(_SAFE_EXT_RE.fullmatch(ext))
+
 
 router = APIRouter()
 
@@ -138,12 +149,15 @@ async def danbooru_label_image(image_id: int, req: DanbooruLabelRequest):
 async def _download_danbooru_liked(image_id: int, ext: str):
     """Download original image from DanbooruFinder to local likes folder."""
     try:
-        # Validate ext to prevent path traversal (only alphanumeric, 2-5 chars)
-        if not re.fullmatch(r"^[a-z0-9]{2,5}$", ext):
+        if not _is_safe_ext(ext):
             logger.warning("[danbooru_likes] Rejected unsafe ext=%r for image %d", ext, image_id)
             return
         DANBOORU_LIKES_DIR.mkdir(parents=True, exist_ok=True)
-        dest = DANBOORU_LIKES_DIR / f"{image_id}.{ext}"
+        likes_root = DANBOORU_LIKES_DIR.resolve()
+        dest = (DANBOORU_LIKES_DIR / f"{image_id}.{ext}").resolve()
+        if not dest.is_relative_to(likes_root):
+            logger.warning("[danbooru_likes] Rejected escape ext=%r for image %d", ext, image_id)
+            return
         if dest.exists():
             return
         client = get_danbooru_client()
@@ -368,6 +382,7 @@ async def danbooru_export_liked(
     tags_map = await svc.fetch_user_tags_map(dldb, LABELER_CFG, image_ids)
 
     local_dir = DANBOORU_LIKES_DIR if verdict == "liked" else None
+    local_root = local_dir.resolve() if local_dir else None
 
     # Phase 1: resolve image sources -> list of (img_id, ext, score, rating, danbooru_tags, local_path|None).
     # For items without a local file, schedule an HTTP fetch.
@@ -376,10 +391,12 @@ async def danbooru_export_liked(
 
     for r in rows:
         img_id, ext = r[0], r[1] or "jpg"
+        if not _is_safe_ext(ext):
+            ext = "jpg"
         local_path = None
-        if local_dir:
-            lp = local_dir / f"{img_id}.{ext}"
-            if lp.exists():
+        if local_dir and local_root is not None:
+            lp = (local_dir / f"{img_id}.{ext}").resolve()
+            if lp.is_relative_to(local_root) and lp.exists():
                 local_path = str(lp)
         items.append((img_id, ext, r[2], r[3], r[4], local_path))
         if local_path is None:
@@ -435,35 +452,23 @@ async def danbooru_export_liked(
         }
 
     tag_suffix = f"_{tag}" if tag else ""
-    # Final filename count is recomputed after build (skipped items reduce count),
-    # but the helper requires a name up front — patch it after build.
     placeholder_name = f"danbooru_{verdict}{tag_suffix}_PLACEHOLDER.zip"
 
-    tmp_path, _placeholder, packed, skipped = await build_zip_to_temp(
+    response, packed, skipped = await build_export_zip(
         indexed_items,
         max_size=max_size,
         fetch_bytes=_fetch_bytes,
         arcname_fn=_arcname,
         meta_fn=_meta,
         download_filename=placeholder_name,
+        rename_after=lambda p, _s: f"danbooru_{verdict}{tag_suffix}_{p}imgs.zip",
     )
 
     if packed == 0:
-        try:
-            import os as _os
-
-            _os.unlink(tmp_path)
-        except OSError:
-            pass
+        await response.body_iterator.aclose()
         raise HTTPException(status_code=404, detail="No image files could be loaded")
 
     if skipped > 0:
         logger.info("[danbooru_export] %s: packed %d, skipped %d", verdict, packed, skipped)
 
-    dl_filename = f"danbooru_{verdict}{tag_suffix}_{packed}imgs.zip"
-
-    return StreamingResponse(
-        stream_and_cleanup(tmp_path),
-        media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{dl_filename}"'},
-    )
+    return response

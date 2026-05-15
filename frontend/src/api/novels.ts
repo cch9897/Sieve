@@ -8,7 +8,7 @@ export async function fetchNovels(params: {
   page?: number
   per_page?: number
 }, signal?: AbortSignal): Promise<NovelListResponse> {
-  const qs = buildQuery(params as Record<string, string | number | undefined>)
+  const qs = buildQuery(params)
   return apiFetch(`${BASE}/api/novels?${qs}`, signal)
 }
 

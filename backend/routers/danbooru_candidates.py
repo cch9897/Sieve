@@ -25,42 +25,44 @@ async def danbooru_candidates_next(
 
     def _query():
         conn = sqlite3.connect(str(CANDIDATES_DB_PATH), timeout=30)
-        conn.execute("ATTACH DATABASE ? AS dldb", (str(DANBOORU_LABELS_DB_PATH),))
-        cur = conn.cursor()
+        try:
+            conn.execute("ATTACH DATABASE ? AS dldb", (str(DANBOORU_LABELS_DB_PATH),))
+            cur = conn.cursor()
 
-        where = ["status = 'pending'"]
-        params_list: list = []
+            where = ["status = 'pending'"]
+            params_list: list = []
 
-        if min_score > 0:
-            where.append("preference_score >= ?")
-            params_list.append(min_score)
-        if min_aes is not None:
-            where.append("cnn_score IS NOT NULL AND cnn_score >= ?")
-            params_list.append(min_aes)
-        if rating:
-            where.append("rating = ?")
-            params_list.append(rating)
-        if media == "image":
-            where.append("ext NOT IN ('mp4', 'webm', 'zip')")
-        elif media == "video":
-            where.append("ext IN ('mp4', 'webm', 'zip')")
+            if min_score > 0:
+                where.append("preference_score >= ?")
+                params_list.append(min_score)
+            if min_aes is not None:
+                where.append("cnn_score IS NOT NULL AND cnn_score >= ?")
+                params_list.append(min_aes)
+            if rating:
+                where.append("rating = ?")
+                params_list.append(rating)
+            if media == "image":
+                where.append("ext NOT IN ('mp4', 'webm', 'zip')")
+            elif media == "video":
+                where.append("ext IN ('mp4', 'webm', 'zip')")
 
-        where.append("image_id NOT IN (SELECT image_id FROM dldb.labels)")
+            where.append("image_id NOT IN (SELECT image_id FROM dldb.labels)")
 
-        where_str = " AND ".join(where)
-        cur.execute(
-            f"SELECT image_id, ext, score, rating, tags, preference_score, tag_score, cnn_score FROM candidates WHERE {where_str} ORDER BY preference_score DESC LIMIT 1",
-            params_list,
-        )
-        row = cur.fetchone()
+            where_str = " AND ".join(where)
+            cur.execute(
+                f"SELECT image_id, ext, score, rating, tags, preference_score, tag_score, cnn_score FROM candidates WHERE {where_str} ORDER BY preference_score DESC LIMIT 1",
+                params_list,
+            )
+            row = cur.fetchone()
 
-        cur.execute(f"SELECT COUNT(*) FROM candidates WHERE {where_str}", params_list)
-        remaining = cur.fetchone()[0]
+            cur.execute(f"SELECT COUNT(*) FROM candidates WHERE {where_str}", params_list)
+            remaining = cur.fetchone()[0]
 
-        total_labeled = conn.execute("SELECT COUNT(*) FROM dldb.labels").fetchone()[0]
+            total_labeled = conn.execute("SELECT COUNT(*) FROM dldb.labels").fetchone()[0]
 
-        conn.close()
-        return row, remaining, total_labeled
+            return row, remaining, total_labeled
+        finally:
+            conn.close()
 
     row, remaining, total_labeled = await loop.run_in_executor(state._db_executor, _query)
 
@@ -106,11 +108,13 @@ async def danbooru_candidates_mark(image_id: int):
 
     def _mark():
         conn = sqlite3.connect(str(CANDIDATES_DB_PATH), timeout=30)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=30000")
-        conn.execute("UPDATE candidates SET status='labeled' WHERE image_id=?", (image_id,))
-        conn.commit()
-        conn.close()
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=30000")
+            conn.execute("UPDATE candidates SET status='labeled' WHERE image_id=?", (image_id,))
+            conn.commit()
+        finally:
+            conn.close()
 
     await loop.run_in_executor(state._db_executor, _mark)
     return {"ok": True}
@@ -125,20 +129,21 @@ async def danbooru_candidates_clear():
 
     def _clear():
         conn = sqlite3.connect(str(CANDIDATES_DB_PATH), timeout=30)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=30000")
-        count = conn.execute("SELECT COUNT(*) FROM candidates").fetchone()[0]
-        conn.execute("DELETE FROM candidates")
-        conn.execute("CREATE TABLE IF NOT EXISTS scan_state (key TEXT PRIMARY KEY, value TEXT)")
-        conn.execute("DELETE FROM scan_state")
-        # Also clear score_log so histogram resets
         try:
-            conn.execute("DELETE FROM score_log")
-        except sqlite3.OperationalError:
-            pass  # table may not exist
-        conn.commit()
-        conn.close()
-        return count
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=30000")
+            count = conn.execute("SELECT COUNT(*) FROM candidates").fetchone()[0]
+            conn.execute("DELETE FROM candidates")
+            conn.execute("CREATE TABLE IF NOT EXISTS scan_state (key TEXT PRIMARY KEY, value TEXT)")
+            conn.execute("DELETE FROM scan_state")
+            try:
+                conn.execute("DELETE FROM score_log")
+            except sqlite3.OperationalError:
+                pass
+            conn.commit()
+            return count
+        finally:
+            conn.close()
 
     deleted = await loop.run_in_executor(state._db_executor, _clear)
     return {"ok": True, "deleted": deleted}

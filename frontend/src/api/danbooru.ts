@@ -23,7 +23,7 @@ export async function fetchDanbooruLabelerNext(params?: {
   min_score?: number
   media?: string
 }, signal?: AbortSignal): Promise<DanbooruLabelerNextResponse> {
-  const qs = buildQuery(params as Record<string, string | number | undefined>)
+  const qs = buildQuery(params)
   return apiFetch(`${BASE}/api/danbooru/labeler/next${qs ? '?' + qs : ''}`, signal)
 }
 
@@ -57,7 +57,7 @@ export async function fetchDanbooruLabelerHistory(params?: {
   page?: number
   per_page?: number
 }, signal?: AbortSignal): Promise<DanbooruLabelerHistoryResponse> {
-  const qs = buildQuery(params as Record<string, string | number | undefined>)
+  const qs = buildQuery(params)
   return apiFetch(`${BASE}/api/danbooru/labeler/history?${qs}`, signal)
 }
 
@@ -67,7 +67,7 @@ export async function fetchDanbooruRecommended(params: {
   min_score?: number
   rating?: string
 }, signal?: AbortSignal): Promise<DanbooruRecommendedResponse> {
-  const qs = buildQuery(params as Record<string, string | number | undefined>)
+  const qs = buildQuery(params)
   return apiFetch(`${BASE}/api/danbooru/recommended?${qs}`, signal)
 }
 
@@ -122,7 +122,7 @@ export async function fetchDanbooruCandidateNext(params: {
   min_score?: number
   min_aes?: number
 }, signal?: AbortSignal): Promise<DanbooruLabelerNextResponse> {
-  const qs = buildQuery(params as Record<string, string | number | undefined>)
+  const qs = buildQuery(params)
   return apiFetch(`${BASE}/api/danbooru/candidates/next?${qs}`, signal)
 }
 

@@ -8,7 +8,6 @@ import state
 from database import get_db, get_labels_db_async
 from utils import _fetch_all_vision_scores, extract_date_from_path
 
-VIDEO_EXTS = state.VIDEO_EXTS
 _video_exclude_sql, _video_exclude_params = state.video_filter_sql()
 _video_include_parts, _video_include_params = state.video_include_sql()
 
@@ -72,7 +71,7 @@ async def list_images(
         img_date = extract_date_from_path(fp)
         subfolder = parts[2] if len(parts) >= 3 else None
         ext = Path(fp).suffix.lower()
-        is_video = ext in VIDEO_EXTS
+        is_video = ext in state.VIDEO_EXTS
 
         scores = all_scores_map.get(r["id"], {})
         images.append(
@@ -160,7 +159,7 @@ async def list_liked(
         img_date = extract_date_from_path(fp)
         subfolder = parts[2] if len(parts) >= 3 else None
         ext = Path(fp).suffix.lower()
-        is_video = ext in VIDEO_EXTS
+        is_video = ext in state.VIDEO_EXTS
 
         scores = all_scores_map.get(r["id"], {})
         images.append(
@@ -274,7 +273,7 @@ async def random_liked(
         img_date = extract_date_from_path(fp)
         subfolder = parts[2] if len(parts) >= 3 else None
         ext = Path(fp).suffix.lower()
-        is_video = ext in VIDEO_EXTS
+        is_video = ext in state.VIDEO_EXTS
         scores = all_scores_map.get(r["id"], {})
         images.append(
             {
@@ -319,6 +318,6 @@ async def get_image(image_id: int):
         "created_at": row["created_at"],
         "date": parts[1] if len(parts) >= 2 else None,
         "subfolder": parts[2] if len(parts) >= 3 else None,
-        "is_video": ext in VIDEO_EXTS,
+        "is_video": ext in state.VIDEO_EXTS,
         "thumb_url": f"/images/{fp}" if fp else None,
     }

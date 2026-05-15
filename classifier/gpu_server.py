@@ -41,7 +41,17 @@ _model_info = {}
 def load_model(model_path: str, device: str):
     global _model, _transform, _device, _model_info
     _device = torch.device(device)
+    if _device.type == "cuda" and not torch.cuda.is_available():
+        import logging
+        logging.warning(
+            "CUDA device '%s' requested but CUDA is not available; falling back to CPU.",
+            device,
+        )
+        _device = torch.device("cpu")
 
+    # weights_only=False: these are self-trained local checkpoints that
+    # contain full model objects (not just weights), so the pickle risk
+    # is accepted. weights_only=True would fail due to the model objects.
     checkpoint = torch.load(model_path, map_location=_device, weights_only=False)
     model_class = checkpoint.get("model_class", "timm")
     model_name = checkpoint["model_name"]

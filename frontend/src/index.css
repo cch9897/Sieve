@@ -15,7 +15,6 @@
   --muted: #b7a58a;
   --accent: #d6a55d;
   --accent-soft: rgba(214, 165, 93, 0.14);
-  --accent-rose: #9f5b52;
   --shadow-lg: 0 32px 90px rgba(0, 0, 0, 0.45);
 
   --radius-sm: 10px;
@@ -44,6 +43,7 @@
   --surface: rgba(255, 255, 255, 0.03);
   --surface-hover: rgba(255, 255, 255, 0.05);
   --overlay: rgba(0, 0, 0, 0.70);
+  --skeleton-speed: 1.8s;
 }
 
 * {
@@ -162,9 +162,30 @@ body::after {
   background: var(--surface);
 }
 
-/* View transition */
-.view-transition {
-  transition: opacity 150ms ease;
+
+/* View Transitions API — cross-fade between views */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 200ms;
+  animation-timing-function: ease;
+}
+
+::view-transition-old(root) {
+  animation-name: fade-out;
+}
+
+::view-transition-new(root) {
+  animation-name: fade-in;
+}
+
+@keyframes fade-out {
+  from { opacity: 1 }
+  to { opacity: 0 }
+}
+
+@keyframes fade-in {
+  from { opacity: 0 }
+  to { opacity: 1 }
 }
 
 .archive-shell {
