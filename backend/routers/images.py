@@ -5,7 +5,9 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
 
 import state
+from config import CRAWLER_DIR
 from database import get_db, get_labels_db_async
+from services import ugoira_service
 from utils import _fetch_all_vision_scores, extract_date_from_path
 
 _video_exclude_sql, _video_exclude_params = state.video_filter_sql()
@@ -72,6 +74,7 @@ async def list_images(
         subfolder = parts[2] if len(parts) >= 3 else None
         ext = Path(fp).suffix.lower()
         is_video = ext in state.VIDEO_EXTS
+        is_animation = ext == ".zip" and ugoira_service.is_ugoira_zip(CRAWLER_DIR / fp)
 
         scores = all_scores_map.get(r["id"], {})
         images.append(
@@ -85,6 +88,7 @@ async def list_images(
                 "date": img_date,
                 "subfolder": subfolder,
                 "is_video": is_video,
+                "is_animation": is_animation,
                 "thumb_url": f"/api/thumb/{fp}" if not is_video else f"/images/{fp}",
                 "vision_score": scores.get(active_db_name) if active_db_name else next(iter(scores.values()), None),
                 "vision_scores": scores,
@@ -160,6 +164,7 @@ async def list_liked(
         subfolder = parts[2] if len(parts) >= 3 else None
         ext = Path(fp).suffix.lower()
         is_video = ext in state.VIDEO_EXTS
+        is_animation = ext == ".zip" and ugoira_service.is_ugoira_zip(CRAWLER_DIR / fp)
 
         scores = all_scores_map.get(r["id"], {})
         images.append(
@@ -173,6 +178,7 @@ async def list_liked(
                 "date": img_date,
                 "subfolder": subfolder,
                 "is_video": is_video,
+                "is_animation": is_animation,
                 "thumb_url": f"/api/thumb/{fp}" if not is_video else f"/images/{fp}",
                 "vision_score": scores.get(active_db_name) if active_db_name else next(iter(scores.values()), None),
                 "vision_scores": scores,
@@ -319,5 +325,6 @@ async def get_image(image_id: int):
         "date": parts[1] if len(parts) >= 2 else None,
         "subfolder": parts[2] if len(parts) >= 3 else None,
         "is_video": ext in state.VIDEO_EXTS,
+        "is_animation": ext == ".zip" and bool(fp) and ugoira_service.is_ugoira_zip(CRAWLER_DIR / fp),
         "thumb_url": f"/images/{fp}" if fp else None,
     }

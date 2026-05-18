@@ -14,6 +14,7 @@ export interface ImageItem {
   date: string | null
   subfolder: string | null
   is_video: boolean
+  is_animation?: boolean
   thumb_url: string
   vision_score?: number | null
   vision_scores?: Record<string, number>
@@ -131,6 +132,7 @@ export interface LabelerImage {
   created_at: string
   date: string | null
   is_video: boolean
+  is_animation?: boolean
   thumb_url: string
   vision_score: number | null
   vision_scores?: Record<string, number>

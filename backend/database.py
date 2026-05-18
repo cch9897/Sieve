@@ -239,8 +239,7 @@ async def get_candidates_db() -> aiosqlite.Connection:
             if state._candidates_pool is None:
                 if not config.CANDIDATES_DB_PATH.exists():
                     raise FileNotFoundError(
-                        f"candidates.db not found at {config.CANDIDATES_DB_PATH} "
-                        "(run prefetch first)"
+                        f"candidates.db not found at {config.CANDIDATES_DB_PATH} (run prefetch first)"
                     )
                 state._candidates_pool = await aiosqlite.connect(str(config.CANDIDATES_DB_PATH))
                 state._candidates_pool.row_factory = aiosqlite.Row

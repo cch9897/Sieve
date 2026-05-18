@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 
 import state
-from config import CRAWLER_DIR
+from services import ugoira_service
 from utils import _range_file_response
 
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff", ".tif", ".avif"}
@@ -43,19 +43,15 @@ def _generate_thumb(source_path: Path, thumb_base: Path, thumb_width: int = 600)
 @router.get("/api/thumb/{file_path:path}")
 async def serve_thumbnail(file_path: str, request: Request):
     """Serve cached thumbnail, generate in thread pool if missing."""
-    source_path: Path | None = None
-    from urllib.parse import quote
-
-    for candidate in [file_path, quote(file_path, safe="/")]:
-        full = CRAWLER_DIR / candidate
-        if state._safe_under_crawler(full) and full.exists():
-            source_path = full
-            break
+    source_path = state._resolve_under_crawler(file_path)
     if source_path is None:
         raise HTTPException(status_code=404, detail="File not found")
 
     ext = source_path.suffix.lower()
-    if ext in _ARCHIVE_EXTS or (ext not in _IMAGE_EXTS and ext not in state.VIDEO_EXTS):
+    is_ugoira = ext == ".zip" and ugoira_service.is_ugoira_zip(source_path)
+    if (ext in _ARCHIVE_EXTS and not is_ugoira) or (
+        ext not in _IMAGE_EXTS and ext not in state.VIDEO_EXTS and not is_ugoira
+    ):
         raise HTTPException(status_code=404, detail="Unsupported file type for thumbnail")
 
     # Videos: serve directly with range support
@@ -72,9 +68,14 @@ async def serve_thumbnail(file_path: str, request: Request):
             )
 
     # Generate thumbnail in thread pool (non-blocking)
+    loop = asyncio.get_running_loop()
     try:
-        loop = asyncio.get_running_loop()
-        thumb_path = await loop.run_in_executor(state._image_executor, _generate_thumb, source_path, thumb_base)
+        if is_ugoira:
+            thumb_path = await loop.run_in_executor(
+                state._image_executor, ugoira_service.extract_first_frame_thumb, source_path, thumb_base
+            )
+        else:
+            thumb_path = await loop.run_in_executor(state._image_executor, _generate_thumb, source_path, thumb_base)
         return FileResponse(
             thumb_path,
             headers={"Cache-Control": "public, max-age=86400, immutable"},

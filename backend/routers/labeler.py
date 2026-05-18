@@ -10,6 +10,7 @@ import state
 from config import CRAWLER_DIR
 from database import get_db, get_labels_db_async
 from services import labeler_service as svc
+from services import ugoira_service
 from services.export_service import build_export_zip
 from utils import _fetch_all_vision_scores, ttl_cache
 
@@ -104,6 +105,7 @@ async def labeler_next(
                 "created_at": row["created_at"],
                 "date": parts[1] if len(parts) >= 2 else None,
                 "is_video": ext in VIDEO_EXTS,
+                "is_animation": ext == ".zip" and ugoira_service.is_ugoira_zip(full_path),
                 "thumb_url": f"/api/thumb/{fp}",
                 "vision_score": vision_score,
                 "vision_scores": scores,
@@ -266,6 +268,7 @@ async def labeler_history(
                 "created_at": r["created_at"],
                 "date": parts[1] if len(parts) >= 2 else None,
                 "is_video": ext in VIDEO_EXTS,
+                "is_animation": ext == ".zip" and bool(fp) and ugoira_service.is_ugoira_zip(CRAWLER_DIR / fp),
                 "thumb_url": f"/api/thumb/{fp}",
                 "verdict": verdict_map.get(iid),
                 "tags": tags_map.get(iid, []),

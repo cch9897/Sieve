@@ -10,7 +10,9 @@ import threading
 from collections import OrderedDict
 from pathlib import Path
 
+from config import ANIMATIONS_DIR as _ANIMATIONS_DIR
 from config import CRAWLER_DIR, PROJECT_ROOT
+from config import UGOIRA_CACHE_MAX_BYTES as _UGOIRA_CACHE_MAX_BYTES
 from subprocess_manager import ManagedSubprocess
 
 # ---------------------------------------------------------------------------
@@ -65,6 +67,8 @@ def video_include_sql(column: str = "file_path") -> tuple[str, list]:
 FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"
 THUMBS_DIR = CRAWLER_DIR / ".thumbs"
 THUMB_WIDTH = 400
+ANIMATIONS_DIR = _ANIMATIONS_DIR
+UGOIRA_CACHE_MAX_BYTES = _UGOIRA_CACHE_MAX_BYTES
 
 # Resolve symlink targets so security checks work with NFS mounts
 _ALLOWED_ROOTS = {CRAWLER_DIR.resolve()}
@@ -148,6 +152,7 @@ _subprocesses: dict[str, ManagedSubprocess] = {
 _image_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="img")
 _io_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="io")
 _db_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="db")
+_animation_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="anim")
 
 # ---------------------------------------------------------------------------
 # DB connection pools (managed by database.py)
@@ -213,3 +218,19 @@ def _safe_under_crawler(path: Path) -> bool:
     """Check path resolves under CRAWLER_DIR or its symlink targets (prevent traversal)."""
     resolved = path.resolve()
     return any(resolved.is_relative_to(root) for root in _ALLOWED_ROOTS)
+
+
+def _resolve_under_crawler(relative_file_path: str) -> Path | None:
+    """Resolve ``relative_file_path`` to an existing file under CRAWLER_DIR.
+
+    Tries the raw value first, then URL-quoted (for paths the router already
+    decoded). Returns ``None`` if neither candidate exists or both fail the
+    safety check. Callers should 404 on ``None``.
+    """
+    from urllib.parse import quote
+
+    for candidate in (relative_file_path, quote(relative_file_path, safe="/")):
+        full = CRAWLER_DIR / candidate
+        if _safe_under_crawler(full) and full.exists():
+            return full
+    return None

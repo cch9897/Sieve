@@ -238,7 +238,7 @@ export default function HistoryMode() {
               ) : (
                 <img
                   key={selected.id}
-                  src={`/images/${selected.file_path}`}
+                  src={selected.is_animation ? `/api/animation/${selected.file_path}` : `/images/${selected.file_path}`}
                   alt=""
                   className="max-h-[75vh] max-w-full rounded-ed-lg object-contain"
                 />

@@ -28,6 +28,7 @@ from config import (
 from database import _init_auto_tags_table, _init_danbooru_labels_db, _init_labels_db, get_sync_db
 from models import _check_cuda_available, _cuda_info
 from routers import (
+    animation,
     autotags,
     danbooru_candidates,
     danbooru_labeler,
@@ -276,6 +277,7 @@ app.add_middleware(MaxBodySizeMiddleware, max_size=1_000_000)
 # Include routers
 # ---------------------------------------------------------------------------
 app.include_router(thumbnails.router)
+app.include_router(animation.router)
 app.include_router(images.router)
 app.include_router(novels.router)
 app.include_router(stats.router)

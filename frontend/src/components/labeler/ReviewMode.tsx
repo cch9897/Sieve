@@ -183,7 +183,7 @@ export default function ReviewMode() {
           ) : (
             <img
               key={image.id}
-              src={`/images/${image.file_path}`}
+              src={image.is_animation ? `/api/animation/${image.file_path}` : `/images/${image.file_path}`}
               alt={image.source + ' ' + image.source_id}
               className="max-h-[65vh] max-w-full rounded-ed-lg object-contain"
               loading="eager"

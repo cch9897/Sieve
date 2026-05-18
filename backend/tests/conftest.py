@@ -107,19 +107,40 @@ def patch_config(tmp_crawler, tmp_path, monkeypatch):
     monkeypatch.setattr(config, "PREFERENCE_MODEL_PATH", tmp_path / "nonexistent.joblib")
     monkeypatch.setattr(config, "CNN_MODEL_PATH", tmp_path / "nonexistent.pt")
     monkeypatch.setattr(config, "CANDIDATES_DB_PATH", tmp_path / "candidates.db")
+    monkeypatch.setattr(config, "ANIMATIONS_DIR", tmp_crawler / ".animations")
+    monkeypatch.setattr(config, "UGOIRA_CACHE_MAX_BYTES", 2 * 1024**3)
     monkeypatch.setattr(config, "PROJECT_ROOT", Path(__file__).parent.parent.parent)
 
     # Also patch state module constants that were computed at import time
     import state
 
     monkeypatch.setattr(state, "THUMBS_DIR", tmp_crawler / ".thumbs")
+    monkeypatch.setattr(state, "ANIMATIONS_DIR", tmp_crawler / ".animations")
+    monkeypatch.setattr(state, "UGOIRA_CACHE_MAX_BYTES", 2 * 1024**3)
     monkeypatch.setattr(state, "_ALLOWED_ROOTS", {tmp_crawler.resolve()})
+
+    # Clear ugoira_service caches that may hold paths from a previous test run
+    try:
+        from services import ugoira_service
+
+        ugoira_service._is_ugoira_cached.cache_clear()
+        ugoira_service._locks.clear()
+    except ImportError:
+        pass
 
     # Modules that did `from config import CRAWLER_DIR` at import time hold a
     # stale reference once we patch config — patch them too if already loaded.
     import sys
 
-    for mod_name in ("utils", "state", "auto_tagger", "routers.thumbnails", "routers.labeler"):
+    for mod_name in (
+        "utils",
+        "state",
+        "auto_tagger",
+        "routers.thumbnails",
+        "routers.labeler",
+        "routers.images",
+        "routers.animation",
+    ):
         mod = sys.modules.get(mod_name)
         if mod is not None and hasattr(mod, "CRAWLER_DIR"):
             monkeypatch.setattr(mod, "CRAWLER_DIR", tmp_crawler)
@@ -195,11 +216,13 @@ async def app(patch_config, init_databases, reset_state):
     test_app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
     from routers import (
+        animation,
         autotags,
         images,
         labeler,
         novels,
         stats,
+        thumbnails,
         vision_scores,
     )
 
@@ -209,6 +232,8 @@ async def app(patch_config, init_databases, reset_state):
     test_app.include_router(labeler.router)
     test_app.include_router(vision_scores.router)
     test_app.include_router(autotags.router)
+    test_app.include_router(thumbnails.router)
+    test_app.include_router(animation.router)
 
     return test_app
 

@@ -11,8 +11,18 @@ from pathlib import Path
 import pytest
 
 
-def _seed_novel(crawler_dir: Path, *, id: int, source: str, source_id: str, title: str,
-                author: str, rel_path: str, created_at: str, meta: dict) -> None:
+def _seed_novel(
+    crawler_dir: Path,
+    *,
+    id: int,
+    source: str,
+    source_id: str,
+    title: str,
+    author: str,
+    rel_path: str,
+    created_at: str,
+    meta: dict,
+) -> None:
     """Insert one novel row + its JSON metadata file."""
     full = crawler_dir / rel_path
     full.parent.mkdir(parents=True, exist_ok=True)
@@ -35,27 +45,57 @@ def novels_seeded(tmp_crawler):
     """Seed three novels with distinct lengths, bookmarks, and dates."""
     _seed_novel(
         tmp_crawler,
-        id=1, source="pixiv", source_id="N1", title="Alpha", author="Aoi",
+        id=1,
+        source="pixiv",
+        source_id="N1",
+        title="Alpha",
+        author="Aoi",
         rel_path="downloads/2024-01-01/pixiv/novel1.json",
         created_at="2024-01-01 10:00:00",
-        meta={"title": "Alpha", "author": "Aoi", "text": "x" * 100,
-              "total_bookmarks": 50, "total_view": 500, "tags": ["fantasy"]},
+        meta={
+            "title": "Alpha",
+            "author": "Aoi",
+            "text": "x" * 100,
+            "total_bookmarks": 50,
+            "total_view": 500,
+            "tags": ["fantasy"],
+        },
     )
     _seed_novel(
         tmp_crawler,
-        id=2, source="pixiv", source_id="N2", title="Bravo", author="Bing",
+        id=2,
+        source="pixiv",
+        source_id="N2",
+        title="Bravo",
+        author="Bing",
         rel_path="downloads/2024-02-01/pixiv/novel2.json",
         created_at="2024-02-01 10:00:00",
-        meta={"title": "Bravo", "author": "Bing", "text": "y" * 500,
-              "total_bookmarks": 10, "total_view": 2000, "tags": ["sf"]},
+        meta={
+            "title": "Bravo",
+            "author": "Bing",
+            "text": "y" * 500,
+            "total_bookmarks": 10,
+            "total_view": 2000,
+            "tags": ["sf"],
+        },
     )
     _seed_novel(
         tmp_crawler,
-        id=3, source="pixiv", source_id="N3", title="Charlie", author="Aoi",
+        id=3,
+        source="pixiv",
+        source_id="N3",
+        title="Charlie",
+        author="Aoi",
         rel_path="downloads/2024-03-01/pixiv/novel3.json",
         created_at="2024-03-01 10:00:00",
-        meta={"title": "Charlie", "author": "Aoi", "text": "z" * 200,
-              "total_bookmarks": 999, "total_view": 100, "tags": []},
+        meta={
+            "title": "Charlie",
+            "author": "Aoi",
+            "text": "z" * 200,
+            "total_bookmarks": 999,
+            "total_view": 100,
+            "tags": [],
+        },
     )
     return tmp_crawler
 

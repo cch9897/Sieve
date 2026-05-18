@@ -46,3 +46,8 @@ SIGLIP2_MODEL_PATH = Path(_siglip2_path) if Path(_siglip2_path).is_absolute() el
 # Candidates DB
 _candidates = os.environ.get("CANDIDATES_DB", "backend/candidates.db")
 CANDIDATES_DB_PATH = Path(_candidates) if Path(_candidates).is_absolute() else PROJECT_ROOT / _candidates
+
+# Animation cache (transcoded ugoira → animated WebP)
+_animations_raw = os.environ.get("ANIMATIONS_DIR", "").strip()
+ANIMATIONS_DIR = Path(_animations_raw) if _animations_raw else CRAWLER_DIR / ".animations"
+UGOIRA_CACHE_MAX_BYTES = int(os.environ.get("UGOIRA_CACHE_MAX_BYTES", "").strip() or str(2 * 1024**3))

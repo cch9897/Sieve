@@ -217,9 +217,9 @@ async def test_next_min_aes_skips_missing_cnn(dc_client, patch_config):
     _seed_candidates(
         config.CANDIDATES_DB_PATH,
         [
-            (1, "jpg", 200, "s", "", 0.9, None, None, "pending"),    # cnn_score NULL
-            (2, "jpg", 200, "s", "", 0.85, None, 0.4, "pending"),    # cnn too low
-            (3, "jpg", 200, "s", "", 0.7, None, 0.8, "pending"),     # passes
+            (1, "jpg", 200, "s", "", 0.9, None, None, "pending"),  # cnn_score NULL
+            (2, "jpg", 200, "s", "", 0.85, None, 0.4, "pending"),  # cnn too low
+            (3, "jpg", 200, "s", "", 0.7, None, 0.8, "pending"),  # passes
         ],
     )
     resp = await dc_client.get("/api/danbooru/candidates/next", params={"min_aes": 0.5})
@@ -336,9 +336,7 @@ async def test_clear_without_score_log_table(dc_client, patch_config):
                 status TEXT DEFAULT 'pending'
             )
         """)
-        conn.execute(
-            "INSERT INTO candidates (image_id, preference_score) VALUES (1, 0.5)"
-        )
+        conn.execute("INSERT INTO candidates (image_id, preference_score) VALUES (1, 0.5)")
         conn.commit()
     finally:
         conn.close()

@@ -87,7 +87,7 @@ export default function Lightbox({ image, images, onClose, onNavigate }: Lightbo
     if (currentIndex < 0) return
     const toPreload = [images[currentIndex - 1], images[currentIndex + 1]].filter(Boolean)
     toPreload.forEach(img => {
-      if (img && !img.is_video) {
+      if (img && !img.is_video && !img.is_animation) {
         const preload = new Image()
         preload.src = `/images/${img.file_path}`
       }
@@ -211,7 +211,7 @@ export default function Lightbox({ image, images, onClose, onNavigate }: Lightbo
               <video src={`/images/${image.file_path}`} controls autoPlay className="max-h-[78vh] max-w-full rounded-[20px]" />
             ) : (
               <img
-                src={`/images/${image.file_path}`}
+                src={image.is_animation ? `/api/animation/${image.file_path}` : `/images/${image.file_path}`}
                 alt={image.source_id}
                 className={`rounded-[20px] cursor-zoom-in transition-transform duration-200 ${zoomed ? 'max-h-none max-w-none object-none cursor-zoom-out' : 'max-h-[55vh] md:max-h-[78vh] max-w-full object-contain'}`}
               />

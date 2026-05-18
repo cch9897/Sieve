@@ -89,9 +89,7 @@ async def test_apply_label_danbooru_with_extra_columns(dan_db):
         user_tags=None,
         extra_values={"ext": "jpg", "score": 100, "rating": "s", "tags": "tag_a tag_b"},
     )
-    async with dan_db.execute(
-        "SELECT image_id, verdict, ext, score, rating, tags FROM labels WHERE image_id=42"
-    ) as c:
+    async with dan_db.execute("SELECT image_id, verdict, ext, score, rating, tags FROM labels WHERE image_id=42") as c:
         row = await c.fetchone()
     assert row["ext"] == "jpg"
     assert row["score"] == 100
