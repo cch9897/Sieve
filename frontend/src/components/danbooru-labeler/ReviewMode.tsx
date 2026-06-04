@@ -21,6 +21,7 @@ export default function ReviewMode() {
   const [totalLabeled, setTotalLabeled] = useState(0)
   const [loading, setLoading] = useState(true)
   const [acting, setActing] = useState(false)
+  const actingRef = useRef(false)
   const [tagInput, setTagInput] = useState('')
   const [tags, setTags] = useState<string[]>([])
   const [mediaFilter, setMediaFilter] = useState<'' | 'image' | 'video'>('image')
@@ -69,7 +70,8 @@ export default function ReviewMode() {
   useEffect(() => { loadNext() }, [loadNext])
 
   const handleVerdict = useCallback(async (verdict: string) => {
-    if (!image || acting) return
+    if (!image || actingRef.current) return
+    actingRef.current = true
     setActing(true)
     const dir = verdict === 'liked' ? 'right' : verdict === 'disliked' ? 'left' : 'up'
     setSlideDir(dir)
@@ -93,9 +95,10 @@ export default function ReviewMode() {
     } catch {
       setSlideDir('')
     } finally {
+      actingRef.current = false
       setActing(false)
     }
-  }, [image, acting, tags, loadNext, source])
+  }, [image, tags, loadNext, source])
 
   const handleUndo = useCallback(async () => {
     if (!lastAction) return

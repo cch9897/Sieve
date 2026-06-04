@@ -28,8 +28,7 @@ jobs:
         run: ruff check .
 
       - name: Audit dependencies
-        run: pip install pip-audit && pip-audit || true
-        continue-on-error: true
+        run: pip install pip-audit && pip-audit
 
       - name: Test
         run: pytest tests/ -v --tb=short
@@ -54,9 +53,7 @@ jobs:
         run: npm ci
 
       - name: Audit dependencies
-        run: npm audit --production || true
-        continue-on-error: true
-
+        run: npm audit --production
       - name: Type check
         run: npx tsc --noEmit
 

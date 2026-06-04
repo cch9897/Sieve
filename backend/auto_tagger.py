@@ -45,21 +45,23 @@ IMAGE_EXTS = _state.IMAGE_EXTS
 def init_auto_tags_table(labels_db: str):
     """Create auto_tags table if not exists."""
     conn = sqlite3.connect(str(labels_db))
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS auto_tags (
-            image_id INTEGER PRIMARY KEY,
-            rating_json TEXT NOT NULL,
-            general_json TEXT NOT NULL,
-            character_json TEXT NOT NULL,
-            top_tags TEXT NOT NULL,
-            model_name TEXT NOT NULL DEFAULT 'SwinV2_v3',
-            general_threshold REAL NOT NULL DEFAULT 0.35,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_auto_tags_created ON auto_tags(created_at)")
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS auto_tags (
+                image_id INTEGER PRIMARY KEY,
+                rating_json TEXT NOT NULL,
+                general_json TEXT NOT NULL,
+                character_json TEXT NOT NULL,
+                top_tags TEXT NOT NULL,
+                model_name TEXT NOT NULL DEFAULT 'SwinV2_v3',
+                general_threshold REAL NOT NULL DEFAULT 0.35,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_auto_tags_created ON auto_tags(created_at)")
+        conn.commit()
+    finally:
+        conn.close()
     log.info("auto_tags table ready")
 
 
@@ -67,14 +69,18 @@ def get_untagged_image_ids(dedup_db: str, labels_db: str, limit: int) -> list[tu
     """Get image IDs that haven't been auto-tagged yet. Returns [(id, file_path), ...]."""
     # Read already-tagged IDs from labels DB
     lconn = sqlite3.connect(str(labels_db))
-    tagged_ids = {r[0] for r in lconn.execute("SELECT image_id FROM auto_tags").fetchall()}
-    lconn.close()
+    try:
+        tagged_ids = {r[0] for r in lconn.execute("SELECT image_id FROM auto_tags").fetchall()}
+    finally:
+        lconn.close()
 
     # Read candidate images from dedup DB (read-only)
     dconn = sqlite3.connect(f"file:{dedup_db}?mode=ro", uri=True)
-    dconn.row_factory = sqlite3.Row
-    rows = dconn.execute("SELECT id, file_path FROM images WHERE file_path IS NOT NULL ORDER BY id").fetchall()
-    dconn.close()
+    try:
+        dconn.row_factory = sqlite3.Row
+        rows = dconn.execute("SELECT id, file_path FROM images WHERE file_path IS NOT NULL ORDER BY id").fetchall()
+    finally:
+        dconn.close()
 
     candidates = []
     for r in rows:
@@ -104,65 +110,68 @@ def save_tags(
     top_str = ", ".join(t[0] for t in top)
 
     conn = sqlite3.connect(str(labels_db))
-    conn.execute(
-        """INSERT OR REPLACE INTO auto_tags
-           (image_id, rating_json, general_json, character_json, top_tags, model_name, general_threshold, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
-        [
-            image_id,
-            json.dumps(rating, ensure_ascii=False),
-            json.dumps(general, ensure_ascii=False),
-            json.dumps(characters, ensure_ascii=False),
-            top_str,
-            model_name,
-            threshold,
-        ],
-    )
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute(
+            """INSERT OR REPLACE INTO auto_tags
+               (image_id, rating_json, general_json, character_json, top_tags, model_name, general_threshold, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+            [
+                image_id,
+                json.dumps(rating, ensure_ascii=False),
+                json.dumps(general, ensure_ascii=False),
+                json.dumps(characters, ensure_ascii=False),
+                top_str,
+                model_name,
+                threshold,
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def save_error(labels_db: str, image_id: int, model_name: str, threshold: float, error_msg: str):
     """Mark an image as failed so it won't be retried."""
     conn = sqlite3.connect(str(labels_db))
-    conn.execute(
-        """INSERT OR REPLACE INTO auto_tags
-           (image_id, rating_json, general_json, character_json, top_tags, model_name, general_threshold, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
-        [
-            image_id,
-            json.dumps({"_error": error_msg}),
-            "{}",
-            "{}",
-            "_error",
-            model_name,
-            threshold,
-        ],
-    )
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute(
+            """INSERT OR REPLACE INTO auto_tags
+               (image_id, rating_json, general_json, character_json, top_tags, model_name, general_threshold, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+            [
+                image_id,
+                json.dumps({"_error": error_msg}),
+                "{}",
+                "{}",
+                "_error",
+                model_name,
+                threshold,
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def get_progress(dedup_db: str, labels_db: str) -> tuple[int, int]:
     """Return (tagged_count, total_images). Excludes error entries."""
     lconn = sqlite3.connect(str(labels_db))
-    tagged = lconn.execute("SELECT COUNT(*) FROM auto_tags WHERE top_tags != '_error'").fetchone()[0]
-    lconn.close()
+    try:
+        tagged = lconn.execute("SELECT COUNT(*) FROM auto_tags WHERE top_tags != '_error'").fetchone()[0]
+    finally:
+        lconn.close()
 
     dconn = sqlite3.connect(f"file:{dedup_db}?mode=ro", uri=True)
-    # Count only images (not videos)
-    _video_exclude_sql, _video_exclude_params = _state.video_filter_sql()
-    total = dconn.execute(
-        f"SELECT COUNT(*) FROM images WHERE file_path IS NOT NULL AND {_video_exclude_sql}",
-        _video_exclude_params,
-    ).fetchone()[0]
-    dconn.close()
+    try:
+        # Count only images (not videos)
+        _video_exclude_sql, _video_exclude_params = _state.video_filter_sql()
+        total = dconn.execute(
+            f"SELECT COUNT(*) FROM images WHERE file_path IS NOT NULL AND {_video_exclude_sql}",
+            _video_exclude_params,
+        ).fetchone()[0]
+    finally:
+        dconn.close()
     return tagged, total
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 
 
 def run(batch: int = 50, sleep_sec: float = 1.0, threshold: float = 0.35, model_name: str = "SwinV2_v3"):

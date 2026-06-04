@@ -68,71 +68,73 @@ def _scan_pt_models() -> None:
         try:
             import torch
 
-            try:
-                checkpoint = torch.load(pt_path, map_location="cpu", weights_only=True)
-            except Exception:
-                checkpoint = torch.load(pt_path, map_location="cpu", weights_only=False)
-            model_class = checkpoint.get("model_class", "timm")
-            model_name = checkpoint.get("model_name", pt_name)
+            checkpoint = torch.load(pt_path, map_location="cpu", weights_only=True)
+        except Exception:
+            logger.warning(
+                "Cannot load %s with weights_only=True — re-save checkpoint with state_dict. Skipping.",
+                pt_path,
+            )
+            continue
 
-            if model_class == "NaFlexClassifier":
-                num_features = checkpoint.get("num_features", 1152)
-                state._models[pt_name] = {
-                    "model": None,
-                    "transform": None,
-                    "processor": None,
-                    "type": "siglip2",
-                    "cv_auc": checkpoint.get("cv_auc", 0),
-                    "n_samples": checkpoint.get("n_samples", 0),
-                    "model_name": model_name,
-                    "model_class": "NaFlexClassifier",
-                    "input_size": "variable",
-                    "num_features": num_features,
-                    "fold_aucs": checkpoint.get("fold_aucs", []),
-                    "max_num_patches": checkpoint.get("max_num_patches", 256),
-                    "source_file": Path(pt_path).name,
-                    "_pt_path": pt_path,
-                }
-                if state._active_model is None:
-                    state._active_model = pt_name
-                logger.info(
-                    "[models] Registered %s: %s (NaFlexClassifier), AUC=%.4f [lazy]",
-                    pt_name,
-                    model_name,
-                    checkpoint.get("cv_auc", 0),
-                )
+        model_class = checkpoint.get("model_class", "timm")
+        model_name = checkpoint.get("model_name", pt_name)
 
-            elif model_class in ("PreferenceModel", "timm"):
-                input_size = checkpoint.get("input_size", 224)
-                state._models[pt_name] = {
-                    "model": None,
-                    "transform": None,
-                    "processor": None,
-                    "type": "timm",
-                    "cv_auc": checkpoint.get("cv_auc", 0),
-                    "n_samples": checkpoint.get("n_samples", 0),
-                    "model_name": model_name,
-                    "model_class": model_class,
-                    "input_size": input_size,
-                    "fold_aucs": checkpoint.get("fold_aucs", []),
-                    "source_file": Path(pt_path).name,
-                    "_pt_path": pt_path,
-                }
-                if state._active_model is None:
-                    state._active_model = pt_name
-                logger.info(
-                    "[models] Registered %s: %s (%s), AUC=%.4f [lazy]",
-                    pt_name,
-                    model_name,
-                    model_class,
-                    checkpoint.get("cv_auc", 0),
-                )
-            else:
-                logger.warning("[models] Skipping %s: unknown model_class '%s'", pt_name, model_class)
+        if model_class == "NaFlexClassifier":
+            num_features = checkpoint.get("num_features", 1152)
+            state._models[pt_name] = {
+                "model": None,
+                "transform": None,
+                "processor": None,
+                "type": "siglip2",
+                "cv_auc": checkpoint.get("cv_auc", 0),
+                "n_samples": checkpoint.get("n_samples", 0),
+                "model_name": model_name,
+                "model_class": "NaFlexClassifier",
+                "input_size": "variable",
+                "num_features": num_features,
+                "fold_aucs": checkpoint.get("fold_aucs", []),
+                "max_num_patches": checkpoint.get("max_num_patches", 256),
+                "source_file": Path(pt_path).name,
+                "_pt_path": pt_path,
+            }
+            if state._active_model is None:
+                state._active_model = pt_name
+            logger.info(
+                "[models] Registered %s: %s (NaFlexClassifier), AUC=%.4f [lazy]",
+                pt_name,
+                model_name,
+                checkpoint.get("cv_auc", 0),
+            )
 
-            del checkpoint
-        except Exception as e:
-            logger.warning("[models] Failed to scan %s: %s", pt_name, e)
+        elif model_class in ("PreferenceModel", "timm"):
+            input_size = checkpoint.get("input_size", 224)
+            state._models[pt_name] = {
+                "model": None,
+                "transform": None,
+                "processor": None,
+                "type": "timm",
+                "cv_auc": checkpoint.get("cv_auc", 0),
+                "n_samples": checkpoint.get("n_samples", 0),
+                "model_name": model_name,
+                "model_class": model_class,
+                "input_size": input_size,
+                "fold_aucs": checkpoint.get("fold_aucs", []),
+                "source_file": Path(pt_path).name,
+                "_pt_path": pt_path,
+            }
+            if state._active_model is None:
+                state._active_model = pt_name
+            logger.info(
+                "[models] Registered %s: %s (%s), AUC=%.4f [lazy]",
+                pt_name,
+                model_name,
+                model_class,
+                checkpoint.get("cv_auc", 0),
+            )
+        else:
+            logger.warning("[models] Skipping %s: unknown model_class '%s'", pt_name, model_class)
+
+        del checkpoint
 
     gc.collect()
     logger.info(
@@ -311,12 +313,16 @@ async def serve_image(file_path: str, request: Request):
 if state.FRONTEND_DIST.exists():
     app.mount("/assets", StaticFiles(directory=state.FRONTEND_DIST / "assets"), name="assets")
 
+    _frontend_root = state.FRONTEND_DIST.resolve()
+
     @app.get("/{full_path:path}")
     async def serve_frontend(full_path: str):
-        file = state.FRONTEND_DIST / full_path
+        file = (_frontend_root / full_path).resolve()
+        if not file.is_relative_to(_frontend_root):
+            raise HTTPException(status_code=404, detail="Not found")
         if file.is_file():
             return FileResponse(file)
-        return FileResponse(state.FRONTEND_DIST / "index.html", headers={"Cache-Control": "no-cache"})
+        return FileResponse(_frontend_root / "index.html", headers={"Cache-Control": "no-cache"})
 
 
 if __name__ == "__main__":

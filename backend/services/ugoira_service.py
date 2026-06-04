@@ -161,17 +161,21 @@ def transcode_to_webp(zip_path: Path, dest_webp: Path) -> None:
     if not pil_frames:
         raise ValueError(f"ugoira {zip_path} produced no decodable frames")
 
-    pil_frames[0].save(
-        tmp,
-        format="WebP",
-        save_all=True,
-        append_images=pil_frames[1:],
-        duration=durations,
-        loop=0,
-        quality=85,
-        method=4,
-    )
-    os.replace(tmp, dest_webp)
+    try:
+        pil_frames[0].save(
+            tmp,
+            format="WebP",
+            save_all=True,
+            append_images=pil_frames[1:],
+            duration=durations,
+            loop=0,
+            quality=85,
+            method=4,
+        )
+        os.replace(tmp, dest_webp)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
     _enforce_cache_limit(protect=dest_webp)
 
 
