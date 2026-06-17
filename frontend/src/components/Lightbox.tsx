@@ -64,6 +64,24 @@ export default function Lightbox({ image, images, onClose, onNavigate }: Lightbo
   const [zoomed, setZoomed] = useState(false)
   const zoomedRef = useRef(zoomed)
   zoomedRef.current = zoomed
+  const lastTap = useRef(0)
+
+  const handleImageClick = useCallback(() => {
+    if (image?.is_video) return
+    const now = Date.now()
+    if (now - lastTap.current < 300) {
+      // Double-tap/click: toggle zoom
+      setZoomed(z => !z)
+      lastTap.current = 0
+    } else {
+      // Single tap: toggle zoom (desktop behavior preserved)
+      lastTap.current = now
+      // Small delay to distinguish from double-tap on touch
+      if (!('ontouchstart' in window)) {
+        setZoomed(z => !z)
+      }
+    }
+  }, [image?.is_video])
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     const isZoomed = zoomedRef.current
     if (e.key === 'Escape') { if (isZoomed) { setZoomed(false); return } onClose() }
@@ -165,6 +183,8 @@ export default function Lightbox({ image, images, onClose, onNavigate }: Lightbo
     const dx = e.changedTouches[0].clientX - touchStart.current.x
     const dy = e.changedTouches[0].clientY - touchStart.current.y
     touchStart.current = null
+    // Don't swipe-navigate while zoomed — allow native pan instead
+    if (zoomedRef.current) return
     if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) {
       if (dx > 0) goPrev()
       else goNext()
@@ -204,7 +224,7 @@ export default function Lightbox({ image, images, onClose, onNavigate }: Lightbo
           <div className={`relative flex min-h-[40vh] items-center justify-center rounded-[24px] bg-[rgba(255,255,255,0.03)] ${zoomed ? 'overflow-auto' : 'overflow-hidden'}`}
             onClick={e => {
               e.stopPropagation()
-              if (!image.is_video) setZoomed(z => !z)
+              handleImageClick()
             }}
           >
             {image.is_video ? (

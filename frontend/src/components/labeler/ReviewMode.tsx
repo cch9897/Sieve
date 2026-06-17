@@ -9,10 +9,13 @@ import {
 import TagInput from '../labeler-shared/TagInput'
 import VerdictButtons from '../labeler-shared/VerdictButtons'
 import Spinner from '../Spinner'
+import { useToast } from '../../hooks/useToast'
+import { useSwipe, swipeTransform, type SwipeDirection } from '../../hooks/useSwipe'
 
 type ReviewImage = NonNullable<LabelerNextResponse['image']>
 
 export default function ReviewMode() {
+  const { toast } = useToast()
   const [image, setImage] = useState<ReviewImage | null>(null)
   const [remaining, setRemaining] = useState(0)
   const [totalLabeled, setTotalLabeled] = useState(0)
@@ -22,7 +25,7 @@ export default function ReviewMode() {
   const [tagInput, setTagInput] = useState('')
   const [tags, setTags] = useState<string[]>([])
   const [mediaFilter, setMediaFilter] = useState<'' | 'image' | 'video'>('')
-  const [lastAction, setLastAction] = useState<{ imageId: number; verdict: string; image: ReviewImage } | null>(null)
+  const [lastAction, setLastAction] = useState<{ imageId: number; verdict: string; image: ReviewImage; tags: string[] } | null>(null)
   const [slideDir, setSlideDir] = useState<'left' | 'right' | 'up' | ''>('')
   const tagInputRef = useRef<HTMLInputElement>(null)
 
@@ -51,14 +54,17 @@ export default function ReviewMode() {
     setActing(true)
     const dir = verdict === 'liked' ? 'right' : verdict === 'disliked' ? 'left' : 'up'
     setSlideDir(dir)
-    setLastAction({ imageId: image.id, verdict, image })
+    setLastAction({ imageId: image.id, verdict, image, tags })
 
     try {
-      await labelImage(image.id, verdict, tags)
-      await new Promise(r => setTimeout(r, 300))
+      await Promise.all([
+        labelImage(image.id, verdict, tags),
+        new Promise(r => setTimeout(r, 300)),
+      ])
       await loadNext()
     } catch (e) {
       console.error('labeler verdict failed:', e)
+      toast('标注失败了，请重试', 'error')
       setSlideDir('')
     } finally {
       actingRef.current = false
@@ -71,11 +77,21 @@ export default function ReviewMode() {
     try {
       await unlabelImage(lastAction.imageId)
       setImage(lastAction.image)
+      setTags(lastAction.tags)
       setRemaining(r => r + 1)
       setTotalLabeled(t => t - 1)
       setLastAction(null)
-    } catch (e) { console.error('labeler undo failed:', e) }
+    } catch (e) { console.error('labeler undo failed:', e); toast('撤销失败', 'error') }
   }, [lastAction])
+
+  const handleSwipe = useCallback((dir: SwipeDirection) => {
+    if (!dir || actingRef.current) return
+    if (dir === 'right') handleVerdict('liked')
+    else if (dir === 'left') handleVerdict('disliked')
+    else if (dir === 'up') handleVerdict('skipped')
+  }, [handleVerdict])
+
+  const { state: swipeState, handlers: swipeHandlers } = useSwipe({ onSwipe: handleSwipe })
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -172,12 +188,15 @@ export default function ReviewMode() {
       </div>
 
       <div
+        {...swipeHandlers}
         className={[
-          'editorial-panel relative w-full max-w-2xl overflow-hidden rounded-ed-xl transition-transform-opacity duration-300',
+          'editorial-panel relative w-full max-w-2xl overflow-hidden rounded-ed-xl transition duration-300 touch-pan-y',
+          swipeState.dragging ? 'transition-none' : '',
           slideDir === 'left' ? '-translate-x-full rotate-[-8deg] opacity-0' : '',
           slideDir === 'right' ? 'translate-x-full rotate-[8deg] opacity-0' : '',
           slideDir === 'up' ? '-translate-y-full opacity-0' : '',
         ].join(' ')}
+        style={swipeState.dragging ? { transform: swipeTransform(swipeState.dx, swipeState.dy), opacity: Math.max(0.5, 1 - Math.abs(swipeState.dx) / 400) } : undefined}
       >
         <div className="flex min-h-[50vh] items-center justify-center bg-[rgba(0,0,0,0.15)] p-2">
           {image.is_video ? (

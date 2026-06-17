@@ -115,6 +115,10 @@ body::after {
 .masonry-item {
   break-inside: avoid;
   margin-bottom: 10px;
+  /* Browser-native virtualization: skip rendering cost for off-screen items.
+     contain-intrinsic-size prevents layout jumps as items scroll in/out. */
+  content-visibility: auto;
+  contain-intrinsic-size: 320px;
 }
 
 @media (min-width: 640px) {
@@ -188,6 +192,11 @@ body::after {
   to { opacity: 1 }
 }
 
+@keyframes slide-in {
+  from { opacity: 0; transform: translateX(1rem) }
+  to { opacity: 1; transform: translateX(0) }
+}
+
 .archive-shell {
   position: relative;
   min-height: 100vh;
@@ -253,5 +262,19 @@ body::after {
 
   main {
     padding-bottom: 5rem;
+  }
+}
+
+/* Respect users who prefer reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .progress-bar-fill {
+    transition: none !important;
   }
 }

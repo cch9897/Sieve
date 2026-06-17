@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, memo } from 'react'
+import React, { useState, useEffect, useRef, useCallback, memo } from 'react'
 import type { ImageItem } from '../types'
 import EmptyState from './EmptyState'
 import { getSourceMeta } from '../sourceMeta'
@@ -11,22 +11,32 @@ interface ImageGridProps {
   onClearFilters?: () => void
 }
 
-const LazyImage = memo(function LazyImage({ src }: { src: string }) {
+const LazyImage = memo(function LazyImage({ src, alt }: { src: string; alt: string }) {
   const [loaded, setLoaded] = useState(false)
+  const [errored, setErrored] = useState(false)
   return (
     <div className="relative overflow-hidden rounded-[22px] bg-[rgba(255,255,255,0.03)]">
-      {!loaded && <div className="absolute inset-0 animate-pulse bg-[rgba(255,255,255,0.05)]" />}
-      <img
-        src={src}
-        alt=""
-        className={[
-          'block w-full transition duration-700 will-change-transform group-hover:scale-[1.025]',
-          loaded ? 'opacity-100' : 'opacity-0',
-        ].join(' ')}
-        loading="lazy"
-        decoding="async"
-        onLoad={() => setLoaded(true)}
-      />
+      {!loaded && !errored && <div className="absolute inset-0 animate-pulse bg-[rgba(255,255,255,0.05)]" />}
+      {errored ? (
+        <div className="flex h-32 items-center justify-center text-xs text-[var(--muted)]">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="10" /><path d="M12 8v5" /><path d="M12 16h.01" />
+          </svg>
+        </div>
+      ) : (
+        <img
+          src={src}
+          alt={alt}
+          className={[
+            'block w-full transition duration-700 will-change-transform group-hover:scale-[1.025]',
+            loaded ? 'opacity-100' : 'opacity-0',
+          ].join(' ')}
+          loading="lazy"
+          decoding="async"
+          onLoad={() => setLoaded(true)}
+          onError={() => setErrored(true)}
+        />
+      )}
     </div>
   )
 })
@@ -68,10 +78,11 @@ function SkeletonGrid() {
   )
 }
 
-const ImageCard = memo(function ImageCard({ img, batchTag, onImageClick }: {
+const ImageCard = memo(function ImageCard({ img, batchTag, onImageClick, onKeyDown }: {
   img: ImageItem;
   batchTag: string | undefined;
   onImageClick: (img: ImageItem) => void;
+  onKeyDown: (e: React.KeyboardEvent) => void;
 }) {
   const meta = getSourceMeta(img.source)
   const topTags = batchTag?.split(',').slice(0, 5).map(tag => tag.trim()).filter(Boolean) ?? []
@@ -82,7 +93,7 @@ const ImageCard = memo(function ImageCard({ img, batchTag, onImageClick }: {
       role="listitem"
       tabIndex={0}
       onClick={() => onImageClick(img)}
-      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onImageClick(img) } }}
+      onKeyDown={onKeyDown}
     >
       <article className="editorial-panel overflow-hidden rounded-[28px] transition-all duration-300 hover:-translate-y-1 hover:border-[var(--line-strong)] hover:shadow-[0_36px_90px_rgba(0,0,0,0.34)] active:scale-[0.98] active:duration-75">
         <div className="relative">
@@ -101,7 +112,7 @@ const ImageCard = memo(function ImageCard({ img, batchTag, onImageClick }: {
               }}
             />
           ) : (
-            <LazyImage src={img.thumb_url} />
+            <LazyImage src={img.thumb_url} alt={`${img.source} ${img.source_id}`} />
           )}
 
           <div className="absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-black/40 via-black/12 to-transparent opacity-80" />
@@ -169,6 +180,40 @@ const MAX_BATCH_TAGS = 300
 const ImageGrid = React.memo(function ImageGrid({ images, onImageClick, loading, onClearFilters }: ImageGridProps) {
   const [batchTags, setBatchTags] = useState<Record<string, { top_tags: string; rating: string }>>({})
   const fetchedIdsRef = useRef<Set<number>>(new Set())
+  const gridRef = useRef<HTMLDivElement>(null)
+
+  const handleCardKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      const el = e.currentTarget as HTMLElement
+      const idx = Array.from(gridRef.current?.querySelectorAll('[role="listitem"]') ?? []).indexOf(el)
+      if (idx >= 0) onImageClick(images[idx])
+      return
+    }
+    // Arrow key navigation between cards
+    if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) return
+    e.preventDefault()
+    const cards = Array.from(gridRef.current?.querySelectorAll<HTMLElement>('[role="listitem"]') ?? [])
+    const current = e.currentTarget as HTMLElement
+    const idx = cards.indexOf(current)
+    if (idx < 0) return
+
+    let next = idx
+    // Estimate columns from masonry layout
+    const containerWidth = gridRef.current?.offsetWidth ?? 0
+    const cardWidth = current.offsetWidth || 300
+    const cols = Math.max(1, Math.round(containerWidth / (cardWidth + 14)))
+
+    if (e.key === 'ArrowRight') next = Math.min(idx + 1, cards.length - 1)
+    else if (e.key === 'ArrowLeft') next = Math.max(idx - 1, 0)
+    else if (e.key === 'ArrowDown') next = Math.min(idx + cols, cards.length - 1)
+    else if (e.key === 'ArrowUp') next = Math.max(idx - cols, 0)
+
+    if (next !== idx && cards[next]) {
+      cards[next].focus()
+      cards[next].scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    }
+  }, [images, onImageClick])
 
   useEffect(() => {
     if (!images.length) {
@@ -220,13 +265,14 @@ const ImageGrid = React.memo(function ImageGrid({ images, onImageClick, loading,
   }
 
   return (
-    <div className="masonry px-3 md:px-0" role="list">
+    <div ref={gridRef} className="masonry px-3 md:px-0" role="list">
       {images.map(img => (
         <ImageCard
           key={img.id}
           img={img}
           batchTag={batchTags[String(img.id)]?.top_tags}
           onImageClick={onImageClick}
+          onKeyDown={handleCardKeyDown}
         />
       ))}
     </div>

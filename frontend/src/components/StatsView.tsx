@@ -24,10 +24,12 @@ import type {
 } from '../api'
 import type { Stats } from '../types'
 import { useTaskPoller } from '../hooks/useTaskPoller'
+import { useToast } from '../hooks/useToast'
 import ModelManagementPanel from './stats/ModelManagementPanel'
 import StatsCharts from './stats/StatsCharts'
 
 export default function StatsView() {
+  const { toast } = useToast()
   const [stats, setStats] = useState<Stats | null>(null)
   const [autoTagsStats, setAutoTagsStats] = useState<AutoTagsStats | null>(null)
   const [mlModels, setMlModels] = useState<MLModelsInfo | null>(null)
@@ -69,19 +71,20 @@ export default function StatsView() {
       } else if (res.status === 'already_running') {
         retrain.start()
       }
-    } catch (e) { console.error('retrain start failed:', e) }
+    } catch (e) { console.error('retrain start failed:', e); toast('重训启动失败', 'error') }
   }, [retrain])
 
   const handleVscore = useCallback(async () => {
     try {
       const res = await startVisionScore(visionModels?.active_model || undefined)
       if (res.status === 'started') {
+        toast('视觉评分已启动', 'success')
         vscore.setStatus({ running: true, finished: false, exit_code: null, log: '' })
         vscore.start()
       } else if (res.status === 'already_running') {
         vscore.start()
       }
-    } catch (e) { console.error('vscore start failed:', e) }
+    } catch (e) { console.error('vscore start failed:', e); toast('评分启动失败', 'error') }
   }, [vscore, visionModels?.active_model])
 
   const handlePack = useCallback(async (maxSize?: number) => {
@@ -93,7 +96,7 @@ export default function StatsView() {
       } else if (res.status === 'already_running') {
         pack.start()
       }
-    } catch (e) { console.error('pack start failed:', e) }
+    } catch (e) { console.error('pack start failed:', e); toast('打包启动失败', 'error') }
   }, [pack])
 
   const handleTagTrain = useCallback(async () => {
@@ -105,7 +108,7 @@ export default function StatsView() {
       } else if (res.status === 'already_running') {
         tagTrain.start()
       }
-    } catch (e) { console.error('tag-train start failed:', e) }
+    } catch (e) { console.error('tag-train start failed:', e); toast('打标启动失败', 'error') }
   }, [tagTrain])
 
   if (loading || !stats) {

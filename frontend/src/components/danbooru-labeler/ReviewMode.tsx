@@ -12,10 +12,13 @@ import {
 import { TagCategoryDisplay, RatingBadge } from './shared'
 import TagInput from '../labeler-shared/TagInput'
 import VerdictButtons from '../labeler-shared/VerdictButtons'
+import { useToast } from '../../hooks/useToast'
+import { useSwipe, swipeTransform, type SwipeDirection } from '../../hooks/useSwipe'
 
 type DanbooruReviewImage = NonNullable<DanbooruLabelerNextResponse['image']>
 
 export default function ReviewMode() {
+  const { toast } = useToast()
   const [image, setImage] = useState<DanbooruReviewImage | null>(null)
   const [remaining, setRemaining] = useState(0)
   const [totalLabeled, setTotalLabeled] = useState(0)
@@ -30,7 +33,7 @@ export default function ReviewMode() {
   const [minScoreDisplay, setMinScoreDisplay] = useState<number>(0)
   const [minAes, setMinAes] = useState<number | undefined>(undefined)
   const [minAesDisplay, setMinAesDisplay] = useState<number>(0)
-  const [lastAction, setLastAction] = useState<{ imageId: number; verdict: string } | null>(null)
+  const [lastAction, setLastAction] = useState<{ imageId: number; verdict: string; tags: string[] } | null>(null)
   const [slideDir, setSlideDir] = useState<'left' | 'right' | 'up' | ''>('')
   const [source, setSource] = useState<'random' | 'ai'>('random')
   const [candidateError, setCandidateError] = useState<string | null>(null)
@@ -75,24 +78,28 @@ export default function ReviewMode() {
     setActing(true)
     const dir = verdict === 'liked' ? 'right' : verdict === 'disliked' ? 'left' : 'up'
     setSlideDir(dir)
-    setLastAction({ imageId: image.id, verdict })
+    setLastAction({ imageId: image.id, verdict, tags })
 
     try {
-      await danbooruLabelImage(image.id, verdict, tags, {
-        ext: image.ext,
-        score: image.score,
-        rating: image.rating,
-        danbooru_tags: image.tags,
-      })
-      if (source === 'ai') {
-        await markDanbooruCandidate(image.id).catch(err => {
-          console.error('markDanbooruCandidate failed:', err)
-          setCandidateError('AI candidate mark failed, but label was saved.')
-        })
-      }
-      await new Promise(r => setTimeout(r, 300))
+      await Promise.all([
+        danbooruLabelImage(image.id, verdict, tags, {
+          ext: image.ext,
+          score: image.score,
+          rating: image.rating,
+          danbooru_tags: image.tags,
+        }).then(async () => {
+          if (source === 'ai') {
+            await markDanbooruCandidate(image.id).catch(err => {
+              console.error('markDanbooruCandidate failed:', err)
+              setCandidateError('AI candidate mark failed, but label was saved.')
+            })
+          }
+        }),
+        new Promise(r => setTimeout(r, 300)),
+      ])
       await loadNext()
     } catch {
+      toast('标注失败了，请重试', 'error')
       setSlideDir('')
     } finally {
       actingRef.current = false
@@ -104,10 +111,20 @@ export default function ReviewMode() {
     if (!lastAction) return
     try {
       await danbooruUnlabelImage(lastAction.imageId)
+      setTags(lastAction.tags)
       setLastAction(null)
       await loadNext()
-    } catch (e) { console.error('undo failed:', e) }
+    } catch (e) { console.error('undo failed:', e); toast('撤销失败', 'error') }
   }, [lastAction, loadNext])
+
+  const handleSwipe = useCallback((dir: SwipeDirection) => {
+    if (!dir || actingRef.current) return
+    if (dir === 'right') handleVerdict('liked')
+    else if (dir === 'left') handleVerdict('disliked')
+    else if (dir === 'up') handleVerdict('skipped')
+  }, [handleVerdict])
+
+  const { state: swipeState, handlers: swipeHandlers } = useSwipe({ onSwipe: handleSwipe })
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -155,13 +172,13 @@ export default function ReviewMode() {
         <div className="flex gap-3">
           <a
             href={getDanbooruExportUrl('liked')}
-            className="rounded-ed-sm bg-emerald-600 px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-emerald-500"
+            className="rounded-ed-sm border border-[var(--success)]/30 bg-[var(--success-soft)] px-5 py-2.5 text-sm font-medium text-[var(--success)] transition-colors hover:bg-[rgba(52,211,153,0.2)]"
           >
             📦 导出喜欢的
           </a>
           <a
             href={getDanbooruExportUrl('liked', undefined, 0)}
-            className="rounded-ed-sm bg-blue-600 px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-blue-500"
+            className="rounded-ed-sm border border-[var(--info)]/30 bg-[var(--info-soft)] px-5 py-2.5 text-sm font-medium text-[var(--info)] transition-colors hover:bg-[rgba(96,165,250,0.2)]"
           >
             🖼️ 原始分辨率
           </a>
@@ -179,7 +196,7 @@ export default function ReviewMode() {
         </div>
         <div className="h-1.5 overflow-hidden rounded-full bg-[var(--surface)]">
           <div
-            className="h-full rounded-full bg-gradient-to-r from-blue-500 to-emerald-500 progress-bar-fill"
+            className="h-full rounded-full bg-gradient-to-r from-[var(--info)] to-[var(--success)] progress-bar-fill"
             style={{ transform: `scaleX(${Math.min(progress, 100) / 100})` }}
           />
         </div>
@@ -191,7 +208,7 @@ export default function ReviewMode() {
                 key={m}
                 onClick={() => setMediaFilter(m)}
                 aria-pressed={mediaFilter === m}
-                className={`rounded-ed-sm px-2 py-1 transition-all ${mediaFilter === m ? 'bg-[var(--surface)] text-blue-400' : 'text-[var(--muted)] hover:text-[var(--text)]'}`}
+                className={`rounded-ed-sm px-2 py-1 transition-all ${mediaFilter === m ? 'bg-[var(--surface)] text-[var(--info)]' : 'text-[var(--muted)] hover:text-[var(--text)]'}`}
               >
                 {m === '' ? '全部' : m === 'image' ? '图片' : '视频'}
               </button>
@@ -207,7 +224,7 @@ export default function ReviewMode() {
                 key={r}
                 onClick={() => setRatingFilter(r)}
                 aria-pressed={ratingFilter === r}
-                className={`rounded-ed-sm px-2 py-1 transition-all ${ratingFilter === r ? 'bg-[var(--surface)] text-blue-400' : 'text-[var(--muted)] hover:text-[var(--text)]'}`}
+                className={`rounded-ed-sm px-2 py-1 transition-all ${ratingFilter === r ? 'bg-[var(--surface)] text-[var(--info)]' : 'text-[var(--muted)] hover:text-[var(--text)]'}`}
               >
                 {r === '' ? 'All' : r.toUpperCase()}
               </button>
@@ -227,7 +244,7 @@ export default function ReviewMode() {
               onChange={e => setMinScoreDisplay(Number(e.target.value))}
               onMouseUp={e => setMinScore(Number((e.target as HTMLInputElement).value))}
               onTouchEnd={e => setMinScore(Number((e.target as HTMLInputElement).value))}
-              className="h-1 w-24 appearance-none rounded-full bg-[var(--surface)] accent-blue-500"
+              className="h-1 w-24 appearance-none rounded-full bg-[var(--surface)] accent-[var(--info)]"
             />
             <span className="min-w-[3ch] text-[var(--muted)]">{minScoreDisplay}</span>
           </div>
@@ -240,7 +257,7 @@ export default function ReviewMode() {
               onClick={() => setSource('random')}
               aria-checked={source === 'random'}
               role="radio"
-              className={`rounded-ed-sm px-2 py-1 transition-all ${source === 'random' ? 'bg-[var(--surface)] text-blue-400' : 'text-[var(--muted)] hover:text-[var(--text)]'}`}
+              className={`rounded-ed-sm px-2 py-1 transition-all ${source === 'random' ? 'bg-[var(--surface)] text-[var(--info)]' : 'text-[var(--muted)] hover:text-[var(--text)]'}`}
             >
               🎲 随机
             </button>
@@ -248,7 +265,7 @@ export default function ReviewMode() {
               onClick={() => setSource('ai')}
               aria-checked={source === 'ai'}
               role="radio"
-              className={`rounded-ed-sm px-2 py-1 transition-all ${source === 'ai' ? 'bg-purple-500/20 text-purple-300 ring-1 ring-purple-500/30' : 'text-[var(--muted)] hover:text-[var(--text)]'}`}
+              className={`rounded-ed-sm px-2 py-1 transition-all ${source === 'ai' ? 'bg-[var(--purple-soft)] text-[var(--purple)] ring-1 ring-[var(--purple)]/30' : 'text-[var(--muted)] hover:text-[var(--text)]'}`}
             >
               🤖 AI推荐
             </button>
@@ -274,9 +291,9 @@ export default function ReviewMode() {
                     const v = Number((e.target as HTMLInputElement).value)
                     setMinAes(v > 0 ? v / 100 : undefined)
                   }}
-                  className="h-1 w-24 appearance-none rounded-full bg-[var(--surface)] accent-pink-500"
+                  className="h-1 w-24 appearance-none rounded-full bg-[var(--surface)] accent-[var(--purple)]"
                 />
-                <span className="min-w-[3ch] text-pink-300">{minAesDisplay}%</span>
+                <span className="min-w-[3ch] text-[var(--purple)]">{minAesDisplay}%</span>
               </div>
             </>
           )}
@@ -290,12 +307,15 @@ export default function ReviewMode() {
       )}
 
       <div
+        {...swipeHandlers}
         className={[
-          'relative w-full max-w-2xl overflow-hidden rounded-ed-xl border border-[var(--line)] bg-[var(--panel)] editorial-panel transition-transform-opacity duration-300',
+          'relative w-full max-w-2xl overflow-hidden rounded-ed-xl border border-[var(--line)] bg-[var(--panel)] editorial-panel transition duration-300 touch-pan-y',
+          swipeState.dragging ? 'transition-none' : '',
           slideDir === 'left' ? '-translate-x-full rotate-[-8deg] opacity-0' : '',
           slideDir === 'right' ? 'translate-x-full rotate-[8deg] opacity-0' : '',
           slideDir === 'up' ? '-translate-y-full opacity-0' : '',
         ].join(' ')}
+        style={swipeState.dragging ? { transform: swipeTransform(swipeState.dx, swipeState.dy), opacity: Math.max(0.5, 1 - Math.abs(swipeState.dx) / 400) } : undefined}
       >
         <div className="flex min-h-[50vh] items-center justify-center bg-[var(--surface)] p-2">
           {image.is_video ? (
@@ -327,15 +347,15 @@ export default function ReviewMode() {
             <span>Score: {image.score}</span>
             {source === 'ai' && image.preference_score != null && (
               <span className={`rounded border px-1.5 py-0.5 text-[11px] font-semibold tabular-nums ${
-                image.preference_score >= 0.8 ? 'border-emerald-500/30 bg-emerald-500/20 text-emerald-300' :
-                image.preference_score >= 0.5 ? 'border-amber-500/30 bg-amber-500/20 text-amber-300' :
-                'border-red-500/30 bg-red-500/20 text-red-300'
+                image.preference_score >= 0.8 ? 'border-[var(--success)]/30 bg-[var(--success-soft)] text-[var(--success)]' :
+                image.preference_score >= 0.5 ? 'border-[var(--warning)]/30 bg-[var(--warning-soft)] text-[var(--warning)]' :
+                'border-[var(--danger)]/30 bg-[var(--danger-soft)] text-[var(--danger)]'
               }`}>
                 <span aria-hidden="true">🤖</span> {(image.preference_score * 100).toFixed(0)}%
               </span>
             )}
             {source === 'ai' && image.aesthetic_score != null && (
-              <span className="rounded border border-pink-500/30 bg-pink-500/20 px-1.5 py-0.5 text-[11px] font-semibold tabular-nums text-pink-300">
+              <span className="rounded border border-[var(--purple)]/30 bg-[var(--purple-soft)] px-1.5 py-0.5 text-[11px] font-semibold tabular-nums text-[var(--purple)]">
                 <span aria-hidden="true">🎨</span> {(image.aesthetic_score * 100).toFixed(0)}%
               </span>
             )}
@@ -356,7 +376,7 @@ export default function ReviewMode() {
 
       <div className="flex items-center gap-4 text-xs text-[var(--muted)]">
         {lastAction && (
-          <button onClick={handleUndo} className="text-blue-400 hover:text-blue-300">
+          <button onClick={handleUndo} className="text-[var(--info)] hover:text-[var(--info)]/80">
             ↩ 撤销上一个
           </button>
         )}

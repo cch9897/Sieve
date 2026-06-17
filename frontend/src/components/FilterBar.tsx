@@ -22,12 +22,13 @@ interface FilterBarProps {
   onExpandedChange: (expanded: boolean | ((prev: boolean) => boolean)) => void
   searchQuery?: string
   onSearchChange?: (q: string) => void
+  onClearAll?: () => void
 }
 
 export default function FilterBar({
   sources, sourceCounts, dates, selectedSource, selectedDate, selectedMedia, sort,
   onSourceChange, onDateChange, onMediaChange, onSortChange, total,
-  mode, onModeChange, expanded, onExpandedChange, searchQuery, onSearchChange,
+  mode, onModeChange, expanded, onExpandedChange, searchQuery, onSearchChange, onClearAll,
 }: FilterBarProps) {
   const activeCount = useMemo(() => {
     let count = 0
@@ -39,6 +40,7 @@ export default function FilterBar({
   }, [selectedSource, selectedDate, selectedMedia, sort])
 
   const clearAll = () => {
+    if (onClearAll) { onClearAll(); return }
     onSearchChange?.('')
     onSourceChange('')
     onDateChange('')
@@ -69,7 +71,7 @@ export default function FilterBar({
               <button
                 onClick={() => onExpandedChange(v => !v)}
                 aria-expanded={expanded}
-                aria-pressed={expanded || activeCount > 0}
+                aria-pressed={expanded}
                 className={[
                   'xl:hidden inline-flex items-center gap-2 rounded-2xl border px-4 py-2.5 text-sm transition-all duration-200',
                   activeCount > 0 || expanded

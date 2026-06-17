@@ -239,6 +239,7 @@ export default function App() {
             onExpandedChange={setFilterExpanded}
             searchQuery={searchQuery}
             onSearchChange={handleSearchChange}
+            onClearAll={clearAllFilters}
           />
           <main id="main-content" className="mx-auto max-w-[1920px] px-3 py-4 pb-20 md:px-6 md:py-6 md:pb-6">
             {errorKind === 'network' ? (
@@ -367,14 +368,6 @@ export default function App() {
           <MobileNavButton active={view === 'stats'} label="统计" onClick={() => handleViewChange('stats')}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M18 20V10M12 20V4M6 20v-6" /></svg>
           </MobileNavButton>
-          <button
-            onClick={() => window.dispatchEvent(new CustomEvent('booru-shortcuts-open'))}
-            aria-label="快捷键帮助"
-            className="flex flex-1 flex-col items-center gap-0.5 py-2.5 text-xs text-[var(--muted)] transition-colors"
-          >
-            <span className="text-lg" aria-hidden="true">?</span>
-            <span>快捷键</span>
-          </button>
         </div>
       </nav>
     </div>

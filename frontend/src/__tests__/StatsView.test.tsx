@@ -4,6 +4,9 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { server } from '../test/handlers'
 import StatsView from '../components/StatsView'
+import { ToastProvider } from '../hooks/useToast'
+
+const renderWithToast = (ui: React.ReactElement) => render(<ToastProvider>{ui}</ToastProvider>)
 
 const baseStats = {
   total: 1000,
@@ -31,7 +34,7 @@ describe('StatsView', () => {
   })
 
   it('renders without crashing', async () => {
-    render(<StatsView />)
+    renderWithToast(<StatsView />)
     // After data loads, the heading is visible.
     await waitFor(() =>
       expect(screen.getByText('统计概览')).toBeInTheDocument(),
@@ -39,7 +42,7 @@ describe('StatsView', () => {
   })
 
   it('shows model management buttons after load', async () => {
-    render(<StatsView />)
+    renderWithToast(<StatsView />)
     await waitFor(() =>
       expect(screen.getByText('模型管理')).toBeInTheDocument(),
     )
@@ -51,7 +54,7 @@ describe('StatsView', () => {
   })
 
   it('renders source distribution bars', async () => {
-    render(<StatsView />)
+    renderWithToast(<StatsView />)
     await waitFor(() =>
       expect(screen.getByText('来源分布')).toBeInTheDocument(),
     )
@@ -69,7 +72,7 @@ describe('StatsView', () => {
         return HttpResponse.json({ status: 'started' })
       }),
     )
-    render(<StatsView />)
+    renderWithToast(<StatsView />)
     await waitFor(() => screen.getByText('重训 XGBoost'))
 
     const user = userEvent.setup()
@@ -85,7 +88,7 @@ describe('StatsView', () => {
         return HttpResponse.json({ status: 'started' })
       }),
     )
-    render(<StatsView />)
+    renderWithToast(<StatsView />)
     await waitFor(() => screen.getByText('视觉评分'))
 
     const user = userEvent.setup()
@@ -101,7 +104,7 @@ describe('StatsView', () => {
         return HttpResponse.json({ status: 'started' })
       }),
     )
-    render(<StatsView />)
+    renderWithToast(<StatsView />)
     await waitFor(() => screen.getByText('📦 打包训练集'))
 
     const user = userEvent.setup()
@@ -110,7 +113,7 @@ describe('StatsView', () => {
   })
 
   it('shows auto-tags progress when /api/autotags/stats returns data', async () => {
-    render(<StatsView />)
+    renderWithToast(<StatsView />)
     await waitFor(() =>
       expect(screen.getByText('自动打标进度')).toBeInTheDocument(),
     )
@@ -122,7 +125,7 @@ describe('StatsView', () => {
     server.use(
       http.get('/api/stats', () => new Promise(() => {})),  // never resolves
     )
-    const { container } = render(<StatsView />)
+    const { container } = renderWithToast(<StatsView />)
     // The Spinner component should appear inside the loading wrapper.
     expect(container.querySelector('div.flex.h-64')).toBeInTheDocument()
   })

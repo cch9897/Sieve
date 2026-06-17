@@ -161,11 +161,11 @@ export default function NovelList({
             <article
               key={novel.id}
               onClick={() => onNovelSelect(novel)}
-              onKeyDown={e => { if (e.key === 'Enter') onNovelSelect(novel) }}
+              onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onNovelSelect(novel) } }}
               tabIndex={0}
               role="button"
               aria-label={`打开小说：${novel.title}`}
-              className="group cursor-pointer editorial-panel p-4 transition-transform-colors duration-200 hover:-translate-y-0.5 hover:border-[var(--line-strong)] active:scale-[0.995]"
+              className="group cursor-pointer editorial-panel p-4 transition duration-200 hover:-translate-y-0.5 hover:border-[var(--line-strong)] active:scale-[0.995]"
             >
               <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                 <div className="min-w-0 flex-1">

@@ -3,6 +3,8 @@ import { useEffect, useState } from 'react'
 const SHORTCUTS = [
   { key: 'G', desc: '切到图库' },
   { key: 'N', desc: '切到小说' },
+  { key: 'D', desc: '切到标注' },
+  { key: 'B', desc: '切到 Danbooru' },
   { key: 'S', desc: '切到统计' },
   { key: 'F', desc: '展开/收起筛选' },
   { key: 'J / K', desc: '下一页 / 上一页（分页模式）' },
