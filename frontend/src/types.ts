@@ -173,9 +173,9 @@ export interface DanbooruImage {
   thumb_url: string
   preview_url: string
   video_url: string | null
-  preference_score?: number
-  aesthetic_score?: number
-  tag_score?: number
+  preference_score?: number | null
+  aesthetic_score?: number | null
+  tag_score?: number | null
 }
 
 export interface DanbooruLabelerNextResponse {

@@ -182,13 +182,20 @@ async def _scan_model_registry() -> None:
 
 
 async def _init_db_indexes() -> None:
-    with get_sync_db(readonly=False) as conn:
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_images_file_created_at ON images(file_path, created_at DESC)")
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_images_source_file_created_at ON images(source, file_path, created_at DESC)"
-        )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_novels_file_created_at ON novels(file_path, created_at DESC)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_novels_title_author ON novels(title, author)")
+    # dedup.db is normally read-only (mode=ro + query_only=ON). These indexes are
+    # created with IF NOT EXISTS so they're idempotent. If the DB lives on a
+    # read-only filesystem the writes will fail — log and continue rather than
+    # crash on startup.
+    try:
+        with get_sync_db(readonly=False) as conn:
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_images_file_created_at ON images(file_path, created_at DESC)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_images_source_file_created_at ON images(source, file_path, created_at DESC)"
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_novels_file_created_at ON novels(file_path, created_at DESC)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_novels_title_author ON novels(title, author)")
+    except (sqlite3.OperationalError, sqlite3.DatabaseError) as e:
+        logger.warning("[db] Could not create indexes on dedup.db (read-only FS?): %s", e)
 
     if CANDIDATES_DB_PATH.exists():
         with sqlite3.connect(str(CANDIDATES_DB_PATH), timeout=30) as cconn:
@@ -224,7 +231,12 @@ async def lifespan(app: FastAPI):
         await state._danbooru_client.aclose()
         state._danbooru_client = None
 
-    for executor in [state._image_executor, state._io_executor, state._db_executor]:
+    for executor in [
+        state._image_executor,
+        state._io_executor,
+        state._db_executor,
+        state._animation_executor,
+    ]:
         executor.shutdown(wait=False)
 
 

@@ -117,7 +117,7 @@ export default function ReviewMode() {
   if (!image) {
     return (
       <div className="flex h-[60vh] flex-col items-center justify-center gap-4 text-center">
-        <div className="text-5xl">🎉</div>
+        <div className="text-5xl" aria-hidden="true">🎉</div>
         <h2 className="editorial-title text-2xl text-[var(--text)]">全部审阅完了！</h2>
         <p className="text-[var(--muted)]">共标注了 {totalLabeled} 张图片</p>
         <div className="flex gap-3">
@@ -143,11 +143,12 @@ export default function ReviewMode() {
       <div className="w-full max-w-2xl">
         <div className="mb-2 flex items-center justify-between text-xs text-[var(--muted)]">
           <span>已标注 {totalLabeled} / {total}</span>
-          <div className="flex gap-3">
+          <div className="flex gap-3" role="group" aria-label="媒体筛选">
             {(['', 'image', 'video'] as const).map(m => (
               <button
                 key={m}
                 onClick={() => setMediaFilter(m)}
+                aria-pressed={mediaFilter === m}
                 className={mediaFilter === m ? 'text-[var(--accent)]' : 'hover:text-[var(--text)]'}
               >
                 {m === '' ? '全部' : m === 'image' ? '图片' : '视频'}
@@ -156,7 +157,13 @@ export default function ReviewMode() {
           </div>
           <span>剩余 {remaining}</span>
         </div>
-        <div className="h-1.5 overflow-hidden rounded-full bg-[rgba(255,255,255,0.05)]">
+        <div
+          className="h-1.5 overflow-hidden rounded-full bg-[rgba(255,255,255,0.05)]"
+          role="progressbar"
+          aria-valuenow={Math.round(progress)}
+          aria-valuemin={0}
+          aria-valuemax={100}
+        >
           <div
             className="h-full rounded-full bg-gradient-to-r from-[var(--info)] to-[var(--success)] progress-bar-fill"
             style={{ transform: `scaleX(${progress / 100})` }}

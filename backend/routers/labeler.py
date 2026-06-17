@@ -291,6 +291,7 @@ async def update_tags(image_id: int, tags: list[str]):
     """Replace all tags for an image."""
     ldb = await get_labels_db_async()
     await svc.replace_user_tags(ldb, LABELER_CFG, image_id, tags)
+    await _labeler_stats_cached.cache_clear()
     return {"ok": True}
 
 

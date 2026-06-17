@@ -551,6 +551,11 @@ async def ml_vscore_status():
     log_content = await mgr.read_log_tail()
     if not running and mgr.process is not None:
         exit_code = mgr.process.poll()
+        # Invalidate vision-scores stats cache so freshly scored data is visible.
+        if exit_code == 0:
+            from routers.vision_scores import _vision_scores_stats_cached
+
+            await _vision_scores_stats_cached.cache_clear()
         return {"running": False, "finished": True, "exit_code": exit_code, "log": log_content}
     return {"running": running, "finished": False, "exit_code": None, "log": log_content}
 

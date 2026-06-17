@@ -61,7 +61,12 @@ def _load_model_weights_locked(key: str):
 
     pt_path = info["_pt_path"]
     _init_device = "cpu"
-    checkpoint = torch.load(pt_path, map_location=_init_device, weights_only=False)
+    # weights_only=True is safe here: checkpoints contain only state_dicts and
+    # basic metadata (model objects are rebuilt from scratch via from_pretrained
+    # / timm.create_model then load_state_dict). The scan phase
+    # (_scan_pt_models) already validated weights_only compatibility, so any
+    # model reaching this point is known to load safely.
+    checkpoint = torch.load(pt_path, map_location=_init_device, weights_only=True)
     model_class = info["model_class"]
     model_name = info["model_name"]
 
@@ -136,11 +141,17 @@ def _get_torch_device() -> str:
 
 
 def _migrate_cnn_to_device(device: str):
-    """Move all loaded models to a different device (cpu/cuda)."""
+    """Move all loaded models to a different device (cpu/cuda).
+
+    Migrates first, then commits ``state._inference_device`` only on success.
+    On failure the device is rolled back so inference doesn't target a device
+    the models were never moved to.
+    """
     with _model_lock:
-        state._inference_device = device
         if not state._models:
+            state._inference_device = device
             return
+        old_device = state._inference_device
         try:
             import torch
 
@@ -150,9 +161,10 @@ def _migrate_cnn_to_device(device: str):
                     continue
                 info["model"] = info["model"].to(target)
                 info["model"].eval()
+            state._inference_device = device
             logger.info("[inference] All models (%s) migrated to %s", list(state._models.keys()), device)
         except Exception as e:
-            logger.error("[inference] Failed to migrate models to %s: %s", device, e)
+            logger.error("[inference] Failed to migrate models to %s: %s (staying on %s)", device, e, old_device)
 
 
 def _check_cuda_available() -> bool:
